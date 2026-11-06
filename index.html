@@ -247,6 +247,9 @@ header.top h1{font-weight:700;font-size:26px;letter-spacing:-.03em}
 .acts .btn{flex:1 1 auto}
 .banner{display:flex;align-items:center;gap:10px;background:var(--warn-bg);color:var(--warn-ink);border-radius:16px;padding:10px 12px 10px 14px;margin:0 0 12px;font-size:13px}
 .banner span{flex:1}
+.chip.btn.on{border:0;background:var(--accent);color:var(--accent-ink);font-weight:600}
+.case.ticked{outline:2px solid var(--accent);outline-offset:-1px}
+.cbbar{position:fixed;left:16px;right:16px;bottom:calc(88px + env(safe-area-inset-bottom));z-index:12;max-width:520px;margin:0 auto;display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:8px 8px 8px 14px;box-shadow:var(--shadow)}
 /* computer screens: wider page, navigation centred under it */
 @media (min-width:900px){
   header.top,main{max-width:860px}
@@ -374,7 +377,7 @@ const STEPS={
 const opSteps=n=>STEPS[n]?STEPS[n].split('|'):[];
 function defaultSettings(){
   return {
-    roles:[{name:'Primary unsupervised',primary:true},{name:'Primary supervised',primary:true},{name:'Co-primary',primary:true},{name:'1st assist',primary:false},{name:'2nd assist',primary:false}],
+    roles:[{name:'Primary unsupervised',primary:true},{name:'Primary supervised',primary:true},{name:'Co-primary',primary:true},{name:'1st assist',primary:false},{name:'2nd assist',primary:false},{name:'3rd assist or higher',primary:false}],
     locations:[{name:'RMH',aliases:['Royal Melbourne']},{name:'Peter Mac',aliases:['PMCC','Peter MacCallum']},{name:'Horsham',aliases:['Wimmera Base']},{name:'Launceston',aliases:['LGH']},{name:'Wangaratta',aliases:['Northeast Health']}],
     categories:CATEGORIES.slice(),
     operations:OPS.map(([name,category,al,scope])=>({name,category,aliases:al?al.split(',').map(s=>s.trim()):[],scope:!!scope,steps:opSteps(name)})),
@@ -390,7 +393,7 @@ function defaultSettings(){
     lastLocation:'',
     rotations:[],
     backup:{every:7,last:0},
-    v:3
+    v:4
   };
 }
 
@@ -411,6 +414,10 @@ function migrate(){
   if(!(S.v>=3)){
     S.operations.forEach(o=>{if(!o.steps)o.steps=opSteps(o.name);});
     S.v=3;
+  }
+  if(!(S.v>=4)){
+    if(!S.roles.some(r=>/^3/.test(r.name))){const i=S.roles.findIndex(r=>r.name==='2nd assist');S.roles.splice(i<0?S.roles.length:i+1,0,{name:'3rd assist or higher',primary:false});}
+    S.v=4;
   }
   S.rotations=S.rotations||[]; S.backup=S.backup||{every:7,last:0};
   S.operations.forEach(o=>{o.steps=o.steps||[];});
@@ -463,6 +470,10 @@ const $=(s,r=document)=>r.querySelector(s);
 const $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+// A combined case counts once. operation is the main procedure; extraOps are the others done in the same case.
+const caseOps=c=>[c.operation,...(c.extraOps||[])];
+const hasOp=(c,n)=>caseOps(c).includes(n);
+const opsText=c=>caseOps(c).join(' + ');
 const pad=n=>String(n).padStart(2,'0');
 const ymd=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const today=()=>ymd(new Date());
@@ -562,6 +573,7 @@ function matchRole(raw,comment){
     if(/co.?primary/.test(c)) return {role:find(/co.?primary/),note:"Role taken from comment 'co-primary'",clearComment:/^\s*co.?primary\s*$/.test(c)};
     return {role:S.primaryAssumption};
   }
+  if(/[3-9]|third|fourth|higher/.test(n)) return {role:find(/^3/)||raw};
   if(/2|second/.test(n)) return {role:find(/^2/)||raw};
   if(/1|first|assist/.test(n)) return {role:find(/^1/)||raw};
   const r=String(raw).trim(); S.roles.push({name:r,primary:false}); return {role:r,note:'New role added'};
@@ -594,6 +606,7 @@ function back(){ const [v,p]=stack.pop()||['dashboard',null]; view=v; param=p; r
 function render(){
   const root=ROOTS.includes(view), sheet=view==='form';
   dictCancel();
+  if(view!=='cases') combine=null;
   formSnap=null;
   document.body.classList.toggle('sheet',sheet);
   const b=$('#back'); b.hidden=root; b.textContent=sheet?'✕':'‹'; b.className=sheet?'sq':'sq ghost';
@@ -663,7 +676,7 @@ function vDashboard(){
   const mrows=months.map(k=>{const a=ops.filter(c=>(c.date||'').startsWith(k));const p=a.filter(c=>kindOf(c)==='p').length;return {k,p,s:0,o:a.length-p,t:a.length};});
   const mmax=Math.max(1,...mrows.map(r=>r.t));
   if(!selMonth||!months.includes(selMonth)) selMonth=[...mrows].reverse().find(r=>r.t)?.k||months[months.length-1];
-  const opCounts={}; cs.forEach(c=>{const o=opCounts[c.operation]||(opCounts[c.operation]={t:0,p:0,u:0});o.t++;if(isPrimary(c.role))o.p++;if(c.role==='Unassisted')o.u++;});
+  const opCounts={}; cs.forEach(c=>caseOps(c).forEach(n=>{const o=opCounts[n]||(opCounts[n]={t:0,p:0,u:0});o.t++;if(isPrimary(c.role))o.p++;if(c.role==='Unassisted')o.u++;}));
   const top=Object.entries(opCounts).sort((a,b)=>b[1].t-a[1].t).slice(0,6);
   const miles=cs.filter(c=>c.milestone).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,5);
   const rots=[...S.rotations].sort((a,b)=>b.start.localeCompare(a.start));
@@ -689,7 +702,7 @@ function vDashboard(){
     <div class="tile"><div class="eb c2">This month</div><div class="num">${tm}</div>
       <div class="sub">${diff>0?`<span class="up">▲ ${diff}</span>`:diff<0?`<span class="down">▼ ${-diff}</span>`:'<span class="down">=</span>'} vs last month</div>
       <div class="spark" title="Last 8 months">${sparkV.map((v,i)=>`<i style="height:${v/smax*100}%" title="${MON[+sparkK[i].slice(5)-1]}: ${v}"></i>`).join('')}</div></div>
-    ${lastMile?`<button class="tile mile" data-act="edit" data-id="${lastMile.id}" style="cursor:pointer"><div class="eb c3">Milestone ★</div><div class="op">${esc(lastMile.operation)}</div>
+    ${lastMile?`<button class="tile mile" data-act="edit" data-id="${lastMile.id}" style="cursor:pointer"><div class="eb c3">Milestone ★</div><div class="op">${esc(opsText(lastMile))}</div>
       <div class="sub">${fmtDate(lastMile.date)} · ${esc(lastMile.location||'')}</div>${lastMile.comments?`<div class="cm">${esc(lastMile.comments)}</div>`:''}</button>`
       :`<div class="tile mile"><div class="eb">Latest milestone <span class="star">★</span></div><div class="sub" style="margin-top:8px">Tick “Milestone case” when you log a first – it will show here.</div></div>`}
   </div>
@@ -726,7 +739,7 @@ function showMonth(){
 /* ---------- Cases list ---------- */
 let cf={q:'',op:'',year:'',month:'',loc:'',role:'',rot:''};
 function vCases(){
-  const ops=[...new Set(db.cases.map(c=>c.operation))];
+  const ops=[...new Set(db.cases.flatMap(caseOps))];
   const byCat={}; ops.forEach(o=>(byCat[catOf(o)]=byCat[catOf(o)]||[]).push(o));
   const opt=(v,l,s)=>`<option value="${esc(v)}"${v===s?' selected':''}>${esc(l)}</option>`;
   $('#main').innerHTML=`
@@ -739,27 +752,57 @@ function vCases(){
     <select data-chg="cf" data-k="role">${opt('','All roles',cf.role)}${opt('@primary','Primary operator (any)',cf.role)}<optgroup label="Operations">${S.roles.map(r=>opt(r.name,r.name,cf.role)).join('')}</optgroup><optgroup label="Scopes">${SCOPE_ROLES.map(r=>opt(r,r,cf.role)).join('')}</optgroup></select>
     ${S.rotations.length?`<select data-chg="cf" data-k="rot">${opt('','All rotations',cf.rot)}${[...S.rotations].sort((a,b)=>b.start.localeCompare(a.start)).map(r=>opt(r.id,r.name,cf.rot)).join('')}</select>`:''}
   </div>
-  <div id="caseSum" class="small muted"></div>
-  <div id="caseList"></div>`;
+  <div class="row" style="align-items:center;margin-bottom:8px"><div id="caseSum" class="small muted" style="flex:1"></div>${combine?'':'<button class="btn sm" data-act="cbStart" style="flex:0 0 auto">Combine cases</button>'}</div>
+  <div id="caseList"${combine?' style="margin-bottom:72px"':''}></div>
+  ${combine?'<div class="cbbar"><span id="cbCount" class="small" style="flex:1"></span><button class="btn sm" data-act="cbCancel" style="flex:0 0 auto">Cancel</button><button class="btn sm pri" data-act="cbGo" style="flex:0 0 auto">Combine</button></div>':''}`;
   renderCaseList();
+}
+// Combining cases already logged: pick them in the list, choose the main procedure, and they become one case
+let combine=null;
+function cbCount(){const e=$('#cbCount');if(e)e.textContent=combine.size?`${combine.size} selected`:'Tap the cases to combine';}
+async function cbGo(){
+  const list=db.cases.filter(c=>combine.has(c.id)).sort((a,b)=>(a.created||0)-(b.created||0));
+  if(list.length<2) return toast('Choose at least two cases');
+  const ops=[...new Set(list.flatMap(caseOps))];
+  const differ=[...new Set(list.map(c=>fmtDate(c.date)+' · '+(c.location||'—')+' · '+(c.role||'No role')))];
+  const k=await ask('Which is the main procedure?',
+    (differ.length>1?`These cases differ (${differ.join('; ')}). The date, hospital and role of the main procedure’s case are kept. `:'')+`They will count as 1 case instead of ${list.length}.`,
+    [...ops.map((n,i)=>[String(i),n,i?'':'pri']),['cancel','Cancel','']]);
+  if(k==='cancel') return;
+  const main=ops[+k], keep=list.find(c=>hasOp(c,main)), rest=list.filter(c=>c!==keep);
+  snapshot('Before combining cases');
+  const uniq=a=>[...new Set(a.filter(Boolean))];
+  keep.operation=main; keep.extraOps=ops.filter(n=>n!==main);
+  keep.steps=uniq(list.flatMap(c=>c.steps||[]));
+  keep.detail=uniq(list.map(c=>c.detail)).join('; ');
+  keep.comments=uniq(list.map(c=>c.comments)).join('\n');
+  keep.importNote=uniq(list.map(c=>c.importNote)).join('; ');
+  keep.orig=uniq(list.map(c=>c.orig)).join('; ');
+  keep.milestone=list.some(c=>c.milestone); keep.converted=list.some(c=>c.converted);
+  rest.forEach(c=>{['urgency','approach','asa','consultant','complication','sex'].forEach(f=>{if(!keep[f]&&c[f])keep[f]=c[f];});
+    if(keep.age==null&&c.age!=null)keep.age=c.age; keep.custom={...(c.custom||{}),...(keep.custom||{})};});
+  keep.updated=Date.now();
+  db.cases=db.cases.filter(c=>!rest.includes(c));
+  combine=null; save(); render(); toast('Combined. To undo, use Backups & snapshots');
 }
 function filteredCases(){
   const q=cf.q.trim().toLowerCase(), rot=S.rotations.find(r=>r.id===cf.rot);
   return db.cases.filter(c=>{
     if(rot&&!inRot(rot,c)) return false;
-    if(cf.op.startsWith('cat:')&&catOf(c.operation)!==cf.op.slice(4)) return false;
-    if(cf.op.startsWith('op:')&&c.operation!==cf.op.slice(3)) return false;
+    if(cf.op.startsWith('cat:')&&!caseOps(c).some(n=>catOf(n)===cf.op.slice(4))) return false;
+    if(cf.op.startsWith('op:')&&!hasOp(c,cf.op.slice(3))) return false;
     if(cf.loc&&c.location!==cf.loc) return false;
     if(cf.year&&!(c.date||'').startsWith(cf.year)) return false;
     if(cf.month&&(c.date||'').slice(5,7)!==cf.month) return false;
     if(cf.role==='@primary'?!isPrimary(c.role):(cf.role&&c.role!==cf.role)) return false;
-    if(q&&![c.operation,c.detail,c.comments,c.consultant,c.location,c.orig].join(' ').toLowerCase().includes(q)) return false;
+    if(q&&![opsText(c),c.detail,c.comments,c.consultant,c.location,c.orig].join(' ').toLowerCase().includes(q)) return false;
     return true;
   }).sort((a,b)=>(b.date||'').localeCompare(a.date||'')||(b.created||0)-(a.created||0));
 }
 function renderCaseList(){
   const list=filteredCases(), opsN=list.filter(c=>!isScopeRole(c.role)).length, p=list.filter(c=>isPrimary(c.role)).length;
   $('#caseSum').textContent=`${plural(list.length,'case')} · ${opsN?Math.round(p/opsN*100):0}% primary operator${opsN<list.length?' (scopes excluded)':''}`;
+  if(combine) cbCount();
   if(!list.length){ $('#caseList').innerHTML=`<div class="empty">No cases match these filters.</div>`; return; }
   let html='', last='';
   for(const c of list){ const k=(c.date||'').slice(0,7); if(k!==last){ last=k; html+=`<div class="monthhead">${k?MONTHS[+k.slice(5)-1]+' '+k.slice(0,4):'No date'}</div>`; } html+=caseCard(c); }
@@ -768,8 +811,9 @@ function renderCaseList(){
 function caseCard(c){
   const flag=c.importNote?' <span class="badge warn">check</span>':'';
   const k=kindOf(c);
-  return `<button class="case" data-act="edit" data-id="${c.id}">
-    <div class="r1"><span class="op">${esc(c.operation)}</span>${c.milestone?'<span class="star">★</span>':''}</div>
+  const pickable=combine&&view==='cases', on=pickable&&combine.has(c.id);
+  return `<button class="case${on?' ticked':''}" data-act="${pickable?'cbTick':'edit'}" data-id="${c.id}"${pickable?` aria-pressed="${on}"`:''}>
+    <div class="r1"><span class="op">${on?'✓ ':''}${esc(opsText(c))}</span>${c.milestone?'<span class="star">★</span>':''}</div>
     <div class="meta">${fmtDate(c.date)} · ${esc(c.location||'—')} · <span class="badge${k==='p'?' p':k==='s'?' s':''}">${esc(c.role||'No role')}</span>${c.steps&&c.steps.length?` · ${plural(c.steps.length,'step')}`:''}${flag}</div>
     ${c.detail||c.comments?`<div class="cm">${esc([c.detail,c.comments].filter(Boolean).join(' — '))}</div>`:''}
   </button>`;
@@ -786,20 +830,28 @@ function roleBlock(opName,sel){
   return `${chips('role',scope?SCOPE_ROLES:S.roles.map(r=>r.name),sel,false)}${scope?'<div class="rolehint">Scopes are logged as assisted / unassisted – they count towards total cases, not primary.</div>':''}`;
 }
 // steps chips for the chosen operation; ticked steps no longer in its list are still shown
-function stepsBlock(opName,sel){
-  const o=opByName(opName); if(!o||!shown('steps')) return '';
+function stepsBlock(names,sel){
+  const ops=[].concat(names||[]).map(opByName).filter(Boolean); if(!ops.length||!shown('steps')) return '';
   sel=sel||[];
-  const all=[...o.steps,...sel.filter(s=>!o.steps.includes(s))];
+  const listed=[...new Set(ops.flatMap(o=>o.steps))];
+  const all=[...listed,...sel.filter(s=>!listed.includes(s))];
   return `<div class="lbl">Steps I performed</div><div class="chips">${all.map(s=>`<label class="chip"><input type="checkbox" name="step" value="${esc(s)}"${sel.includes(s)?' checked':''}><span>${esc(s)}</span></label>`).join('')}
     ${all.length>1?'<button type="button" class="chip btn" data-act="allSteps">All</button>':''}<button type="button" class="chip btn" data-act="addStep">＋ Step</button></div>
     ${all.length?'':'<div class="rolehint">Add the key steps of this operation once – they’ll show every time you log it.</div>'}`;
 }
 const formOp=()=>(S.operations.find(o=>o.name.toLowerCase()===$('#f_op').value.trim().toLowerCase())||{}).name||'';
+// the other procedures in this case, held in a hidden field so the unsaved-changes check sees them
+const formXOps=()=>{const e=$('#f_xops');return e&&e.value?e.value.split('\u0002'):[];};
+function setXOps(list){
+  $('#f_xops').value=[...new Set(list)].join('\u0002');
+  $('#xOps').innerHTML=formXOps().map(n=>`<button type="button" class="chip btn on" data-act="delXOp" data-n="${esc(n)}" aria-label="Remove ${esc(n)}">${esc(n)} ✕</button>`).join('');
+  updateSteps();
+}
 function updateSteps(){
   const box=$('#stepsBox'); if(!box) return;
-  const op=formOp(); if(box.dataset.op===op) return;
-  const cur=$$('input[name="step"]:checked').map(e=>e.value), keep=(opByName(op)||{steps:[]}).steps;
-  box.dataset.op=op; box.innerHTML=stepsBlock(op,cur.filter(s=>keep.includes(s)));
+  const names=[formOp(),...formXOps()].filter(n=>opByName(n)), key=names.join('|'); if(box.dataset.op===key) return;
+  const cur=$$('input[name="step"]:checked').map(e=>e.value), keep=names.flatMap(n=>opByName(n).steps);
+  box.dataset.op=key; box.innerHTML=stepsBlock(names,cur.filter(s=>keep.includes(s)));
 }
 function updateRoles(){
   updateSteps();
@@ -810,7 +862,7 @@ function updateRoles(){
   const cur=(document.querySelector('input[name="role"]:checked')||{}).value;
   box.dataset.kind=kind; box.innerHTML=roleBlock(op,cur);
 }
-function freqOps(){const m={};db.cases.forEach(c=>m[c.operation]=(m[c.operation]||0)+1);return Object.entries(m).sort((a,b)=>b[1]-a[1]).map(x=>x[0]).filter(n=>opByName(n)).slice(0,8);}
+function freqOps(){const m={};db.cases.forEach(c=>caseOps(c).forEach(n=>m[n]=(m[n]||0)+1));return Object.entries(m).sort((a,b)=>b[1]-a[1]).map(x=>x[0]).filter(n=>opByName(n)).slice(0,8);}
 function vForm(){
   const c=param?db.cases.find(x=>x.id===param):null;
   const v=c||{date:today(),location:S.lastLocation||nm(S.locations[0]||''),custom:{}};
@@ -834,10 +886,14 @@ function vForm(){
       <input class="inp" id="f_op" value="${esc(v.operation||'')}" placeholder="Start typing, e.g. lap chole" data-inp="op">
       <div id="opSug"></div>
       <div id="newOp" class="newop" hidden></div>
+      <input type="hidden" id="f_xops" value="${esc((v.extraOps||[]).join('\u0002'))}">
+      <div class="chips" style="margin-top:8px"><span id="xOps" style="display:contents">${(v.extraOps||[]).map(n=>`<button type="button" class="chip btn on" data-act="delXOp" data-n="${esc(n)}" aria-label="Remove ${esc(n)}">${esc(n)} ✕</button>`).join('')}</span><button type="button" class="chip btn" data-act="addXOp">＋ Another procedure</button></div>
+      <input class="inp" id="f_xop" hidden style="margin-top:8px" placeholder="Other procedure in this case" data-inp="xop" aria-label="Another procedure">
+      <div id="xSug"></div>
     </div>
     ${shown('detail')?`<div class="field"><label for="f_detail">Details <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional – side, extras)</span></label><input class="inp" id="f_detail" value="${esc(v.detail||'')}" placeholder="e.g. left, bilateral, + flexi sig"></div>`:''}
     <div class="field"><div class="lbl">My role</div><div id="roleBox" data-kind="${isScopeOp(v.operation)?'scope':'std'}">${roleBlock(v.operation,v.role)}</div></div>
-    <div class="field" id="stepsBox" data-op="${esc(opByName(v.operation)?v.operation:'')}">${stepsBlock(v.operation,v.steps)}</div>
+    <div class="field" id="stepsBox" data-op="${esc(caseOps(v).filter(n=>opByName(n)).join('|'))}">${stepsBlock(caseOps(v),v.steps)}</div>
     <div class="field"><div class="lbl">Location</div><div class="chips" data-group="location">${S.locations.map(l=>`<label class="chip"><input type="radio" name="location" value="${esc(l.name)}"${l.name===v.location?' checked':''}><span>${esc(l.name)}</span></label>`).join('')}<button type="button" class="chip btn" data-act="addLoc">＋ New</button></div></div>
     ${shown('milestone')?`<label class="toggle card" style="padding:12px 16px"><span><span class="star">★</span> Milestone case<br><span class="small muted">First time doing something, skin-to-skin, etc.</span></span><input type="checkbox" id="f_mile"${v.milestone?' checked':''}></label>`:''}
     <div class="field"><label for="f_cm">Comments / reflection</label><textarea class="inp" id="f_cm" placeholder="What I did, what went well, what to improve…">${esc(v.comments||'')}</textarea>
@@ -863,18 +919,33 @@ function vForm(){
   const opIn=$('#f_op');
   opIn.addEventListener('focus',()=>opSuggest());
   opIn.addEventListener('blur',()=>setTimeout(()=>{$('#opSug').innerHTML='';},180));
+  const xIn=$('#f_xop');
+  xIn.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();pickXOp();}});
+  xIn.addEventListener('blur',()=>setTimeout(()=>{const s=$('#xSug');if(s)s.innerHTML='';},180));
   checkNewOp();
   formSnap=snapForm();
 }
+function opMatches(q){
+  if(!q) return freqOps().map(n=>opByName(n));
+  const nq=norm(q), lq=q.toLowerCase();
+  return S.operations.map(o=>{let s=0;const all=[o.name,...o.aliases];
+    if(all.some(a=>a.toLowerCase().startsWith(lq)))s=2;else if(all.some(a=>a.toLowerCase().includes(lq)))s=1.5;else s=Math.max(...all.map(a=>scoreText(nq,norm(a))));
+    return [o,s];}).filter(x=>x[1]>=.5).sort((a,b)=>b[1]-a[1]).slice(0,7).map(x=>x[0]);
+}
+function xopSuggest(){
+  const q=$('#f_xop').value.trim(), items=opMatches(q).filter(o=>o.name!==formOp()&&!formXOps().includes(o.name));
+  const exact=S.operations.some(o=>o.name.toLowerCase()===q.toLowerCase());
+  $('#xSug').innerHTML=(items.length||(q&&!exact))?`<div class="sugg">${items.map(o=>`<button type="button" data-act="pickXOp" data-n="${esc(o.name)}">${esc(o.name)}<small>${esc(o.category)}</small></button>`).join('')}${q&&!exact?`<button type="button" class="new" data-act="pickXOp" data-n="${esc(q)}">＋ Add “${esc(q)}” as a new operation</button>`:''}</div>`:'';
+}
+// a name typed but not yet picked is resolved to the list, or added as a new operation when the case is saved
+function pickXOp(name){
+  const x=$('#f_xop'), raw=(name||x.value).trim(); if(!raw) return;
+  const n=(S.operations.find(o=>o.name.toLowerCase()===raw.toLowerCase())||{}).name||raw;
+  if(n!==formOp()) setXOps([...formXOps(),n]);
+  x.value=''; x.hidden=true; $('#xSug').innerHTML='';
+}
 function opSuggest(){
-  const q=$('#f_op').value.trim(); let items;
-  if(!q){ items=freqOps().map(n=>opByName(n)); }
-  else {
-    const nq=norm(q), lq=q.toLowerCase();
-    items=S.operations.map(o=>{let s=0;const all=[o.name,...o.aliases];
-      if(all.some(a=>a.toLowerCase().startsWith(lq)))s=2;else if(all.some(a=>a.toLowerCase().includes(lq)))s=1.5;else s=Math.max(...all.map(a=>scoreText(nq,norm(a))));
-      return [o,s];}).filter(x=>x[1]>=.5).sort((a,b)=>b[1]-a[1]).slice(0,7).map(x=>x[0]);
-  }
+  const q=$('#f_op').value.trim(); const items=opMatches(q);
   const exact=S.operations.some(o=>o.name.toLowerCase()===q.toLowerCase());
   $('#opSug').innerHTML=(items.length||(q&&!exact))?`<div class="sugg">${!q&&items.length?'<div class="small muted" style="padding:8px 14px 4px">Frequently logged</div>':''}${items.map(o=>`<button type="button" data-act="pickOp" data-n="${esc(o.name)}">${esc(o.name)}<small>${esc(o.category)}</small></button>`).join('')}${q&&!exact?`<button type="button" class="new" data-act="newOpFocus">＋ Add “${esc(q)}” as a new operation</button>`:''}</div>`:'';
   checkNewOp(); updateRoles();
@@ -909,8 +980,12 @@ async function saveCase(existing,then){
       S.operations.push({name:op,category:$('#newOpCat').value||'Uncategorised',aliases:[],scope:false,steps:[]});
     }
   }
+  pickXOp();
+  const extras=formXOps().filter(n=>n!==op);
+  extras.forEach(n=>{if(opByName(n))return;const m=matchOperation(n);S.operations.push({name:n,category:((m.score>=.6&&m.op)||opByName(op)||{}).category||'Uncategorised',aliases:[],scope:false,steps:[]});});
   const c=existing||{id:uid(),created:Date.now()};
   Object.assign(c,{date,operation:op,role,location:g('location'),comments:val('f_cm')||''});
+  if(extras.length) c.extraOps=extras; else delete c.extraOps;
   const set=(k,v)=>{ if(shown(k)) c[k]=v; };
   set('detail',val('f_detail')||''); set('urgency',g('urgency')); set('approach',g('approach')); set('asa',g('asa')); set('sex',g('sex'));
   set('consultant',val('f_cons')||''); set('complication',val('f_comp')||'');
@@ -1016,7 +1091,7 @@ function renameEverywhere(k,oldV,newV){
 let opQ='';
 function vOps(){
   const q=opQ.toLowerCase();
-  const cnt={}; db.cases.forEach(c=>cnt[c.operation]=(cnt[c.operation]||0)+1);
+  const cnt={}; db.cases.forEach(c=>caseOps(c).forEach(n=>cnt[n]=(cnt[n]||0)+1));
   const list=S.operations.filter(o=>!q||[o.name,...o.aliases].join(' ').toLowerCase().includes(q));
   const cats=[...S.categories,...new Set(list.map(o=>o.category).filter(c=>!S.categories.includes(c)))];
   $('#main').innerHTML=`
@@ -1030,7 +1105,7 @@ function vOps(){
 }
 function vOpEdit(){
   const o=opByName(param); if(!o) return back();
-  const n=db.cases.filter(c=>c.operation===o.name).length;
+  const n=db.cases.filter(c=>hasOp(c,o.name)).length;
   $('#main').innerHTML=`
   <form id="opForm">
     <div class="field"><label>Name</label><input class="inp" id="o_name" value="${esc(o.name)}"></div>
@@ -1051,7 +1126,7 @@ function vOpEdit(){
   $('#opForm').addEventListener('submit',e=>{e.preventDefault();
     const nn=$('#o_name').value.trim(); if(!nn) return toast('Name required');
     if(nn!==o.name&&S.operations.some(x=>x!==o&&x.name.toLowerCase()===nn.toLowerCase())) return toast('That name already exists – use Merge');
-    if(nn!==o.name){db.cases.forEach(c=>{if(c.operation===o.name)c.operation=nn;});}
+    if(nn!==o.name){db.cases.forEach(c=>{if(c.operation===o.name)c.operation=nn;if(c.extraOps)c.extraOps=c.extraOps.map(x=>x===o.name?nn:x);});}
     o.name=nn; o.category=$('#o_cat').value; o.aliases=$('#o_al').value.split(',').map(s=>s.trim()).filter(Boolean);
     o.steps=[...new Set($('#o_steps').value.split('\n').map(s=>s.trim()).filter(Boolean))];
     const sc=$('#o_scope').checked;
@@ -1146,7 +1221,7 @@ function vRotation(){
   const miles=cs.filter(c=>c.milestone);
   const tally=(list,f)=>{const m={};list.forEach(c=>{const k=f(c);if(k)m[k]=(m[k]||0)+1;});return Object.entries(m).sort((a,b)=>b[1]-a[1]);};
   const urg=tally(cs,c=>c.urgency), appr=tally(ops,c=>c.approach), cats=tally(ops,c=>catOf(c.operation));
-  const opCounts={}; cs.forEach(c=>{const o=opCounts[c.operation]||(opCounts[c.operation]={t:0,p:0,u:0});o.t++;if(isPrimary(c.role))o.p++;if(c.role==='Unassisted')o.u++;});
+  const opCounts={}; cs.forEach(c=>caseOps(c).forEach(n=>{const o=opCounts[n]||(opCounts[n]={t:0,p:0,u:0});o.t++;if(isPrimary(c.role))o.p++;if(c.role==='Unassisted')o.u++;}));
   const top=Object.entries(opCounts).sort((a,b)=>b[1].t-a[1].t);
   $('#main').innerHTML=`
   <div class="hero"><span class="logo"></span>
@@ -1177,11 +1252,13 @@ function vRotation(){
 }
 /* ---------- Progress for one operation ---------- */
 function vOpStats(){
-  const name=param, o=opByName(name), cs=db.cases.filter(c=>c.operation===name).sort(byDateDesc);
+  const name=param, o=opByName(name), cs=db.cases.filter(c=>hasOp(c,name)).sort(byDateDesc);
   if(!cs.length&&!o) return back();
   const scope=o&&o.scope, roles=scope?SCOPE_ROLES:S.roles.map(r=>r.name);
-  const withSteps=cs.filter(c=>c.steps&&c.steps.length);
-  const steps=[...new Set([...(o?o.steps:[]),...withSteps.flatMap(c=>c.steps)])];
+  // in a combined case, only this operation's own steps count here
+  const ownSteps=c=>c.extraOps&&c.extraOps.length&&o?(c.steps||[]).filter(s=>o.steps.includes(s)):(c.steps||[]);
+  const withSteps=cs.filter(c=>ownSteps(c).length);
+  const steps=[...new Set([...(o?o.steps:[]),...withSteps.flatMap(ownSteps)])];
   const prim=cs.filter(c=>isPrimary(c.role)||c.role==='Unassisted').length;
   $('#main').innerHTML=`
   <div class="hero"><span class="logo"></span>
@@ -1276,13 +1353,13 @@ async function aiBusy(btn,label,fn){
 const opLines=()=>S.operations.map(o=>o.name+(o.steps.length?` (steps: ${o.steps.join('; ')})`:'')).join('\n');
 const AI_ROLE='You help an Australian general surgery registrar keep a de-identified surgical logbook. Use Australian spelling. Never include or ask for patient identifiers such as names, URNs or dates of birth; leave out any that appear.';
 
-const QUICK_SCHEMA={type:'object',additionalProperties:false,required:['date','operation','detail','role','location','urgency','approach','converted','steps','milestone','comments'],properties:{
-  date:{type:'string'},operation:{type:'string'},detail:{type:'string'},role:{type:'string'},location:{type:'string'},urgency:{type:'string'},approach:{type:'string'},
+const QUICK_SCHEMA={type:'object',additionalProperties:false,required:['date','operation','other_operations','detail','role','location','urgency','approach','converted','steps','milestone','comments'],properties:{
+  date:{type:'string'},operation:{type:'string'},other_operations:{type:'array',items:{type:'string'}},detail:{type:'string'},role:{type:'string'},location:{type:'string'},urgency:{type:'string'},approach:{type:'string'},
   converted:{type:'boolean'},steps:{type:'array',items:{type:'string'}},milestone:{type:'boolean'},comments:{type:'string'}}};
 async function aiQuickLog(btn){
   const note=$('#ai_note').value.trim(); if(!note) return toast('Type a few words about the case first');
   const r=await aiBusy(btn,'Working…',()=>aiRequest({schema:QUICK_SCHEMA,
-    system:`${AI_ROLE}\nTurn the registrar's note into one logbook entry. Choose the closest name from the lists given, spelled exactly as listed. If the operation isn't listed, give a short standard name. Use an empty string for anything the note doesn't state, and never guess the role. Ask no questions. date is YYYY-MM-DD and only if the note gives one (work out words like "yesterday"). detail is side or extras. steps lists only steps the note says the registrar personally did, taken from that operation's steps. milestone is true only if the note describes a first or a personal best. comments keeps the registrar's reflections in their own words, without repeating the other fields.`,
+    system:`${AI_ROLE}\nTurn the registrar's note into one logbook entry. Choose the closest name from the lists given, spelled exactly as listed. If the operation isn't listed, give a short standard name. If the note describes several procedures done in the same case, put the main one in operation and the others in other_operations; otherwise leave other_operations empty. Use an empty string for anything the note doesn't state, and never guess the role. Ask no questions. date is YYYY-MM-DD and only if the note gives one (work out words like "yesterday"). detail is side or extras. steps lists only steps the note says the registrar personally did, taken from that operation's steps. milestone is true only if the note describes a first or a personal best. comments keeps the registrar's reflections in their own words, without repeating the other fields.`,
     user:`Today is ${today()}.\nOperator roles: ${S.roles.map(x=>x.name).join(', ')}. Endoscopy operations use: ${SCOPE_ROLES.join(', ')}.\nHospitals: ${S.locations.map(l=>l.name).join(', ')}.\nUrgency: ${S.urgencies.join(', ')}.\nApproaches: ${S.approaches.join(', ')}.\nOperations:\n${opLines()}\n\n<note>\n${deid(note,true)}\n</note>`}));
   if(!r) return;
   applyQuickLog(r); $('#ai_note').value='';
@@ -1338,6 +1415,7 @@ function applyQuickLog(r){
   const pick=(name,v)=>{const all=$$(`input[name="${name}"]`),el=all.find(x=>x.value.toLowerCase()===String(v||'').toLowerCase());if(!el)return;all.forEach(x=>{if(x.dataset.on)x.dataset.on='';});el.checked=true;if(el.dataset.desel)el.dataset.on='1';};
   if(/^\d{4}-\d{2}-\d{2}$/.test(r.date)&&r.date<=today()) $('#f_date').value=r.date;
   if(r.operation){ const known=S.operations.find(o=>o.name.toLowerCase()===r.operation.toLowerCase()); $('#f_op').value=known?known.name:r.operation; checkNewOp(); updateRoles(); }
+  (r.other_operations||[]).forEach(n=>pickXOp(n));
   pick('role',r.role); pick('location',r.location); pick('urgency',r.urgency); pick('approach',r.approach);
   const stepEls=$$('input[name="step"]'); (r.steps||[]).forEach(s=>{const el=stepEls.find(x=>x.value.toLowerCase()===s.toLowerCase());if(el)el.checked=true;});
   if(r.detail&&$('#f_detail')) $('#f_detail').value=r.detail;
@@ -1348,7 +1426,7 @@ function applyQuickLog(r){
 }
 async function aiReflect(btn){
   const g=n=>(document.querySelector(`input[name="${n}"]:checked`)||{}).value||'';
-  const op=$('#f_op').value.trim(); if(!op) return toast('Enter the operation first');
+  const op=[$('#f_op').value.trim(),...formXOps()].filter(Boolean).join(' + '); if(!$('#f_op').value.trim()) return toast('Enter the operation first');
   const r=await aiBusy(btn,'Thinking…',()=>aiRequest({schema:{type:'object',additionalProperties:false,required:['questions'],properties:{questions:{type:'array',items:{type:'string'}}}},
     system:`${AI_ROLE}\nWrite one or two short reflection questions for this case, each under 20 words. Make them specific to the operation, the registrar's role and anything they wrote, focusing on technique, decision-making or what to do differently next time. Ask only; give no advice or judgement.`,
     user:`Operation: ${deid(op)}\nRole: ${g('role')||'not given'}\nSteps performed: ${$$('input[name="step"]:checked').map(e=>e.value).join('; ')||'none ticked'}\nComments so far: ${deid($('#f_cm').value)||'none'}`}));
@@ -1371,7 +1449,7 @@ function vAiTidy(){
   if(T.running){ $('#main').innerHTML=`<div class="card"><h2>Checking your cases…</h2><p class="small" style="margin:0">${T.done} of ${T.total} done. Keep this screen open.</p><div class="prog"><i style="width:${T.done/T.total*100}%"></i></div></div>`; return; }
   $('#main').innerHTML=`${T.error?`<div class="banner"><span>Stopped after ${T.done} of ${T.total}: ${esc(T.error)}</span></div>`:''}
     <div class="note">${plural(T.items.length,'suggestion')}${T.items.length?'. Untick anything that’s wrong.':'. Claude found nothing to add.'}</div>
-    ${T.items.map((it,i)=>{const c=db.cases.find(x=>x.id===it.id);return c?`<div class="card"><div style="font-weight:600">${esc(c.operation)}</div>
+    ${T.items.map((it,i)=>{const c=db.cases.find(x=>x.id===it.id);return c?`<div class="card"><div style="font-weight:600">${esc(opsText(c))}</div>
       <div class="small muted">${fmtDate(c.date)} · ${esc(c.role||'No role')}</div><p class="small" style="margin:6px 0 10px">${esc(c.comments)}</p>
       <div class="chips">${it.steps.map(s=>`<label class="chip"><input type="checkbox" data-tidy="${i}" value="${esc(s)}" checked><span>${esc(s)}</span></label>`).join('')}
       ${it.milestone?`<label class="chip"><input type="checkbox" data-tidy="${i}" data-mile="1" checked><span>★ Milestone</span></label>`:''}</div></div>`:'';}).join('')}
@@ -1386,9 +1464,9 @@ async function aiTidyRun(){
       const batch=list.slice(i,i+TIDY_BATCH);
       const r=await aiRequest({schema,maxTokens:8000,
         system:`${AI_ROLE}\nFor each numbered case, read the comment and return a result. steps lists only steps from that case's list that the comment clearly shows the registrar personally did; "skin to skin" or "did everything" means all of them. If unclear, leave steps empty rather than guess. milestone is true only if the comment describes a first or a clear personal best.`,
-        user:batch.map((c,k)=>`Case ${k}\nOperation: ${c.operation}\nRole: ${c.role||'not recorded'}\nSteps to choose from: ${(opByName(c.operation)||{steps:[]}).steps.join('; ')||'none'}\nComment: ${deid(c.comments)}`).join('\n\n')});
+        user:batch.map((c,k)=>`Case ${k}\nOperation: ${opsText(c)}\nRole: ${c.role||'not recorded'}\nSteps to choose from: ${caseOps(c).flatMap(n=>(opByName(n)||{steps:[]}).steps).join('; ')||'none'}\nComment: ${deid(c.comments)}`).join('\n\n')});
       (r.results||[]).forEach(x=>{const c=batch[x.case];if(!c)return;
-        const allowed=(opByName(c.operation)||{steps:[]}).steps, steps=x.steps.filter(s=>allowed.includes(s)), milestone=x.milestone&&!c.milestone;
+        const allowed=caseOps(c).flatMap(n=>(opByName(n)||{steps:[]}).steps), steps=x.steps.filter(s=>allowed.includes(s)), milestone=x.milestone&&!c.milestone;
         if(steps.length||milestone) T.items.push({id:c.id,steps,milestone});});
       T.seen.push(...batch.map(c=>c.id)); T.done=Math.min(list.length,i+TIDY_BATCH);
       if(view==='aiTidy') render();
@@ -1417,7 +1495,7 @@ function aiSumData(){
   const r=S.rotations.find(x=>x.id===aiSum.scope), cs=(r?rotCases(r):db.cases).slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
   const ops=cs.filter(c=>!isScopeRole(c.role)), prim=ops.filter(c=>isPrimary(c.role)).length, scopes=cs.length-ops.length;
   const roles=S.roles.map(x=>`${x.name}: ${ops.filter(c=>c.role===x.name).length}`).join(', ');
-  const lines=cs.map(c=>[(c.date||'').slice(0,7),c.operation,c.role,c.location,c.urgency,c.approach,c.milestone?'milestone':'',c.steps&&c.steps.length?'steps: '+c.steps.join('; '):'',deid(c.comments)].filter(Boolean).join(' | '));
+  const lines=cs.map(c=>[(c.date||'').slice(0,7),opsText(c),c.role,c.location,c.urgency,c.approach,c.milestone?'milestone':'',c.steps&&c.steps.length?'steps: '+c.steps.join('; '):'',deid(c.comments)].filter(Boolean).join(' | '));
   return {n:cs.length,text:`Period: ${r?`${r.name}, ${rotLabel(r)}`:'whole logbook'}\nTotal cases: ${cs.length}\nOperations (excluding endoscopy): ${ops.length}\nPrimary operator: ${prim} of ${ops.length}${ops.length?` (${Math.round(prim/ops.length*100)}%)`:''}\nBy role: ${roles}\nEndoscopies, not counted as primary: ${scopes}\n\nCases (month | operation | role | hospital | other):\n${lines.join('\n')}`};
 }
 function vAiSummary(){
@@ -1673,12 +1751,12 @@ function download(name,blob){const a=document.createElement('a');a.href=URL.crea
 const stamp=()=>today();
 function exportRows(list=db.cases){
   return [...list].sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(c=>{
-    const r={Date:c.date||'',Operation:c.operation,Category:catOf(c.operation),Detail:c.detail||'',Role:c.role||'',Location:c.location||'',Urgency:c.urgency||'',Approach:c.approach||'',ASA:c.asa||'',Consultant:c.consultant||'',Age:c.age??'',Sex:c.sex||'','Converted to open':c.converted?'Yes':'',Complications:c.complication||'',Milestone:c.milestone?'Yes':'','Steps performed':(c.steps||[]).join('; '),Comments:c.comments||''};
+    const r={Date:c.date||'',Operation:c.operation,'Also performed':(c.extraOps||[]).join('; '),Category:catOf(c.operation),Detail:c.detail||'',Role:c.role||'',Location:c.location||'',Urgency:c.urgency||'',Approach:c.approach||'',ASA:c.asa||'',Consultant:c.consultant||'',Age:c.age??'',Sex:c.sex||'','Converted to open':c.converted?'Yes':'',Complications:c.complication||'',Milestone:c.milestone?'Yes':'','Steps performed':(c.steps||[]).join('; '),Comments:c.comments||''};
     S.customFields.forEach(f=>{const v=(c.custom||{})[f.id];r[f.label]=f.type==='yesno'?(v?'Yes':''):(v??'');});
     r['Original operation text']=c.orig||''; r['Import notes']=c.importNote||''; return r;});
 }
 function summaryRows(list=db.cases){
-  const m={}; list.forEach(c=>{const o=m[c.operation]||(m[c.operation]={});o[c.role]=(o[c.role]||0)+1;});
+  const m={}; list.forEach(c=>caseOps(c).forEach(n=>{const o=m[n]||(m[n]={});o[c.role]=(o[c.role]||0)+1;}));
   const anyScope=list.some(c=>isScopeRole(c.role));
   return Object.keys(m).sort((a,b)=>catOf(a).localeCompare(catOf(b))||a.localeCompare(b)).map(op=>{
     const r={Category:catOf(op),Operation:op}; let p=0;
@@ -1705,7 +1783,7 @@ function parseDate(v){
 }
 const yes=v=>v===true||/^(y|yes|true|1|✓|x)$/i.test(String(v??'').trim());
 const COLS=[['timestamp',/timestamp/],['dob',/^dob$|birth/],['date',/^((operation|surgery|procedure|case) )?date$|^date of (operation|surgery|procedure)/],
-  ['orig',/original operation/],['importNote',/import note/],['steps',/^steps/],['operation',/^(operation|procedure|surgery|case)( name| performed| type)?$/],['category',/^category$/],['detail',/^details?$/],
+  ['orig',/original operation/],['importNote',/import note/],['extraOps',/also performed/],['steps',/^steps/],['operation',/^(operation|procedure|surgery|case)( name| performed| type)?$/],['category',/^category$/],['detail',/^details?$/],
   ['role',/role|primary|assist|operator/],['location',/location|hospital|site/],['urgency',/urgency|elective|emergency/],['approach',/approach/],['asa',/^asa/],
   ['consultant',/consultant|supervisor|surgeon/],['age',/^age/],['sex',/^(sex|gender)/],['converted',/convert/],['complication',/complication/],['milestone',/milestone/],
   ['comments',/comment|^notes?$|remark|reflection/]];
@@ -1740,7 +1818,7 @@ function prepareImport(arr,fileName){
     return {raw,choice,score:m.score,c:{id:uid(),created:Date.now(),date,role:rr.role,location:matchLocation(get('location')),detail:String(get('detail')||'').trim(),
       urgency:matchList('urgencies',get('urgency')),approach:matchList('approaches',get('approach')),asa:matchList('asa',get('asa')),consultant:matchList('consultants',get('consultant')),
       age:isNaN(age)?null:age,sex:matchList('sexes',get('sex')),converted:yes(get('converted')),complication:matchList('complications',get('complication')),milestone:yes(get('milestone')),
-      comments,custom,steps:String(get('steps')||'').split(';').map(s=>s.trim()).filter(Boolean),orig:String(get('orig')||'')||(choice&&choice!=='NEW'&&norm(raw)!==norm(choice)?raw:''),importNote:notes.join('; ')}};
+      comments,custom,extraOps:String(get('extraOps')||'').split(';').map(s=>s.trim()).filter(Boolean),steps:String(get('steps')||'').split(';').map(s=>s.trim()).filter(Boolean),orig:String(get('orig')||'')||(choice&&choice!=='NEW'&&norm(raw)!==norm(choice)?raw:''),importNote:notes.join('; ')}};
   });
   pending={fileName,rows:rowsOut,ignored,showAll:false};
   go('import');
@@ -1767,7 +1845,7 @@ function vImport(){
   <div class="savebar"><button class="btn" data-act="impCancel" style="flex:0 0 auto">Cancel</button><button class="btn pri" data-act="impGo">Import ${plural(P.rows.length,'case')}</button></div>`;
 }
 function doImport(){
-  const skip=$('#skipDup').checked; const key=c=>[c.date,c.operation,c.role,c.location,(c.comments||'').slice(0,20)].join('|');
+  const skip=$('#skipDup').checked; const key=c=>[c.date,opsText(c),c.role,c.location,(c.comments||'').slice(0,20)].join('|');
   const have=new Set(db.cases.map(key)); let added=0,dup=0,noop=0;
   snapshot('Before import');
   for(const r of pending.rows){
@@ -1776,6 +1854,8 @@ function doImport(){
     if(!op){noop++;continue;}
     if(op!==r.raw&&r.raw&&opByName(op)&&!r.c.orig&&norm(op)!==norm(r.raw)) r.c.orig=r.raw;
     const c={...r.c,operation:op};
+    if(c.extraOps.length){c.extraOps=c.extraOps.map(n=>{const m=matchOperation(n);const name=m.score>=.85?m.op.name:n;if(!opByName(name))S.operations.push({name,category:'Uncategorised',aliases:[],scope:false,steps:[]});return name;});}
+    else delete c.extraOps;
     if(isScopeOp(op)&&c.role&&!isScopeRole(c.role)) c.role=scopeRole(c.role,c.comments).role;
     if(skip&&have.has(key(c))){dup++;continue;}
     db.cases.push(c); added++;
@@ -1810,6 +1890,13 @@ const ACT={
   back:()=>guard(back),
   edit:t=>go('form',t.dataset.id),
   month:t=>{selMonth=t.dataset.k;$$('.col').forEach(c=>c.classList.toggle('sel',c.dataset.k===selMonth));showMonth();},
+  addXOp:()=>{const x=$('#f_xop');x.hidden=false;x.focus();xopSuggest();},
+  pickXOp:t=>pickXOp(t.dataset.n),
+  delXOp:t=>setXOps(formXOps().filter(n=>n!==t.dataset.n)),
+  cbStart:()=>{combine=new Set();render();},
+  cbCancel:()=>{combine=null;render();},
+  cbGo:()=>cbGo(),
+  cbTick:t=>{const id=t.dataset.id;if(combine.has(id))combine.delete(id);else combine.add(id);renderCaseList();},
   pickOp:t=>{$('#f_op').value=t.dataset.n;$('#opSug').innerHTML='';checkNewOp();updateRoles();},
   newOpFocus:()=>{$('#f_op').dataset.newop=$('#f_op').value.trim();$('#opSug').innerHTML='';checkNewOp();$('#newOpCat')&&$('#newOpCat').focus();},
   addLoc:async t=>{const v=await askText('New location','',{btn:'Add',placeholder:'Hospital name'});if(!v)return;
@@ -1830,9 +1917,10 @@ const ACT={
   liAlias:async t=>{const it=S.locations[+t.dataset.i];const v=await askText(`Other names for ${it.name}`,'Separate names with commas.',{value:it.aliases.join(', ')});if(v==null)return;it.aliases=v.split(',').map(s=>s.trim()).filter(Boolean);save();render();},
   mergeOp:async()=>{const o=opByName(param),tn=$('#o_merge').value;if(!tn)return toast('Choose an operation');const t=opByName(tn);
     if(!await askYes('Merge operations?',`Move all cases from “${o.name}” to “${t.name}”.`,'Merge'))return;
-    db.cases.forEach(c=>{if(c.operation===o.name){c.operation=tn;if(t.scope&&!isScopeRole(c.role))c.role=scopeRole(c.role,c.comments).role;}});
+    db.cases.forEach(c=>{if(c.operation===o.name){c.operation=tn;if(t.scope&&!isScopeRole(c.role))c.role=scopeRole(c.role,c.comments).role;}
+      if(c.extraOps){c.extraOps=[...new Set(c.extraOps.map(x=>x===o.name?tn:x))].filter(x=>x!==c.operation);if(!c.extraOps.length)delete c.extraOps;}});
     t.aliases=[...new Set([...t.aliases,o.name,...o.aliases])];S.operations=S.operations.filter(x=>x!==o);save();toast('Merged');back();},
-  delOp:async()=>{const o=opByName(param);const n=db.cases.filter(c=>c.operation===o.name).length;if(n)return toast(`${plural(n,'case')} use this – merge it instead`);
+  delOp:async()=>{const o=opByName(param);const n=db.cases.filter(c=>hasOp(c,o.name)).length;if(n)return toast(`${plural(n,'case')} use this – merge it instead`);
     if(!await askYes(`Delete “${o.name}”?`,'','Delete','dng'))return;S.operations=S.operations.filter(x=>x!==o);save();back();},
   cfDel:async t=>{if(!await askYes('Remove this custom field?','Data already saved in cases is kept in backups.','Remove','dng'))return;S.customFields.splice(+t.dataset.i,1);save();render();},
   exportXlsx:()=>exportXlsx(db.cases,`surgical-logbook-${stamp()}.xlsx`),
@@ -1844,7 +1932,7 @@ const ACT={
     if(k!=='go')return; await snapshot('Before restoring a snapshot'); db=JSON.parse(s.data); S=db.settings; migrate(); save(); toast('Snapshot restored'); goRoot('dashboard');},
   addStep:async()=>{const o=opByName(formOp());if(!o)return;const v=await askText('New step',o.name,{btn:'Add',placeholder:'e.g. Closure'});if(!v)return;
     let s=o.steps.find(x=>x.toLowerCase()===v.toLowerCase()); if(!s){o.steps.push(v);s=v;save();}
-    const cur=[...new Set([...$$('input[name="step"]:checked').map(e=>e.value),s])]; $('#stepsBox').innerHTML=stepsBlock(o.name,cur);},
+    const cur=[...new Set([...$$('input[name="step"]:checked').map(e=>e.value),s])]; $('#stepsBox').innerHTML=stepsBlock([o.name,...formXOps()],cur);},
   allSteps:()=>{const bs=$$('input[name="step"]'),on=!bs.every(b=>b.checked);bs.forEach(b=>b.checked=on);},
   opStats:t=>go('opStats',t.dataset.n),
   syncIn:()=>syncSignIn(), syncOut:()=>syncSignOut(),
@@ -1888,7 +1976,7 @@ const CHG={
   showField:t=>{const k=t.dataset.k;S.hidden=S.hidden.filter(x=>x!==k);if(!t.checked)S.hidden.push(k);save();},
   impPick:t=>{pending.rows[+t.dataset.i].choice=t.value;}
 };
-const INP={ q:t=>{cf.q=t.value;renderCaseList();}, op:()=>opSuggest(), opq:t=>{opQ=t.value;const pos=t.selectionStart;vOps();const n=$('[data-inp="opq"]');n.focus();n.setSelectionRange(pos,pos);} };
+const INP={ q:t=>{cf.q=t.value;renderCaseList();}, op:()=>opSuggest(), xop:()=>xopSuggest(), opq:t=>{opQ=t.value;const pos=t.selectionStart;vOps();const n=$('[data-inp="opq"]');n.focus();n.setSelectionRange(pos,pos);} };
 document.addEventListener('click',e=>{
   if(e.target.closest('#modal')) return;
   const r=e.target.closest('input[type=radio][data-desel]');
