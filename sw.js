@@ -1,6 +1,6 @@
 // Offline support: keeps a copy of the app on the phone so it opens without signal.
 // Bump VERSION whenever the app files change so phones pick up the new version.
-const VERSION = 'logbook-v5';
+const VERSION = 'logbook-v6';
 const SHELL = ['./', './index.html', './logo.png', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png'];
 const CDN = /^(fonts\.googleapis\.com|fonts\.gstatic\.com|cdnjs\.cloudflare\.com|www\.gstatic\.com)$/;
 

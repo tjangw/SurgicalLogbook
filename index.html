@@ -593,6 +593,7 @@ function goRoot(v){ stack=[]; view=v; param=null; render(); window.scrollTo(0,0)
 function back(){ const [v,p]=stack.pop()||['dashboard',null]; view=v; param=p; render(); }
 function render(){
   const root=ROOTS.includes(view), sheet=view==='form';
+  dictCancel();
   formSnap=null;
   document.body.classList.toggle('sheet',sheet);
   const b=$('#back'); b.hidden=root; b.textContent=sheet?'✕':'‹'; b.className=sheet?'sq':'sq ghost';
@@ -825,8 +826,8 @@ function vForm(){
   $('#main').innerHTML=`
   ${!c&&aiKey()?`<div class="card"><p class="eyebrow">AI · quick log</p>
     <textarea class="inp" id="ai_note" style="min-height:104px" placeholder="e.g. lap chole, 1st assist at RMH, did port entry and took the GB off the plate"></textarea>
-    <p class="small muted" style="margin:6px 0 10px">Type, or tap the mic on your keyboard. No names or URNs. Check the form before saving.</p>
-    <button type="button" class="btn sm pri" data-act="aiQuick">Fill in the form</button></div>`:''}
+    <p class="small muted" id="ai_hint" style="margin:6px 0 10px">${SR()?'Tap Dictate and speak, or type.':'Type, or tap the mic on your keyboard.'} No names or URNs. Check the form before saving.</p>
+    <div class="row">${SR()?'<button type="button" class="btn sm pri" id="aiMic" data-act="aiMic">Dictate</button>':''}<button type="button" class="btn sm${SR()?'':' pri'}" data-act="aiQuick">Fill in the form</button></div></div>`:''}
   <form id="caseForm" autocomplete="off">
     <div class="field"><label for="f_date">Date</label><input class="inp" type="date" id="f_date" value="${esc(v.date||'')}" required></div>
     <div class="field"><label for="f_op">Operation</label>
@@ -1287,6 +1288,52 @@ async function aiQuickLog(btn){
   applyQuickLog(r); $('#ai_note').value='';
   toast('Form filled in – check it, then save');
 }
+// Dictation. Phones end a listening session at each pause, so it restarts until Stop is tapped, then fills in the form.
+const SR=()=>window.SpeechRecognition||window.webkitSpeechRecognition;
+let dict=null;
+function dictUi(on){
+  const b=$('#aiMic'),n=$('#ai_note'),f=$('[data-act="aiQuick"]'),h=$('#ai_hint');
+  if(b) b.textContent=on?'Stop and fill in':'Dictate';
+  if(n) n.readOnly=on;
+  if(f) f.hidden=on;
+  if(h) h.textContent=on?'Listening… pause whenever you like, then tap Stop. No names or URNs.':'Tap Dictate and speak, or type. No names or URNs. Check the form before saving.';
+}
+function dictCancel(){if(!dict)return;const d=dict;dict=null;try{d.rec.abort();}catch(e){}dictUi(false);}
+function dictListen(d){
+  const rec=d.rec=new (SR())();
+  rec.lang='en-AU'; rec.continuous=true; rec.interimResults=true;
+  rec.onresult=e=>{
+    const parts=[], el=$('#ai_note'); if(!el) return;
+    // Android repeats each phrase as it grows, so a result that extends the last one replaces it
+    for(let i=0;i<e.results.length;i++){const t=e.results[i][0].transcript.trim();if(!t)continue;
+      const l=parts[parts.length-1]; if(l&&t.toLowerCase().startsWith(l.toLowerCase()))parts[parts.length-1]=t;else parts.push(t);}
+    el.value=[d.base,...parts].filter(Boolean).join(' ');
+  };
+  rec.onerror=e=>{d.err=e.error;};
+  rec.onend=()=>{
+    if(dict!==d) return;
+    const el=$('#ai_note'), err=d.err;
+    if(d.stop||err){
+      dict=null; dictUi(false);
+      if(/not-allowed|service-not-allowed|audio-capture/.test(err||'')) return notice('Microphone unavailable','Allow the microphone for this app in your phone’s settings, or tap the mic on your keyboard instead.');
+      if(err==='network') return notice('Dictation needs a connection','Your words so far are still in the box. You can type the rest, or try again with signal.');
+      if(err==='no-speech'&&!d.stop) return toast('Stopped listening – tap Dictate to carry on');
+      if(el&&el.value.trim()) aiQuickLog($('[data-act="aiQuick"]'));
+      else toast('Didn’t catch anything – try again');
+      return;
+    }
+    d.base=el?el.value.trim():d.base;
+    dictListen(d);
+  };
+  rec.start();
+}
+function aiMic(){
+  if(dict){dict.stop=true;dict.rec.stop();return;}
+  const d={base:$('#ai_note').value.trim(),stop:false,err:''};
+  dict=d; dictUi(true);
+  try{dictListen(d);}catch(e){dict=null;dictUi(false);notice('Dictation unavailable','Tap the mic on your keyboard instead.');}
+}
+document.addEventListener('visibilitychange',()=>{if(document.hidden)dictCancel();});
 function applyQuickLog(r){
   const pick=(name,v)=>{const all=$$(`input[name="${name}"]`),el=all.find(x=>x.value.toLowerCase()===String(v||'').toLowerCase());if(!el)return;all.forEach(x=>{if(x.dataset.on)x.dataset.on='';});el.checked=true;if(el.dataset.desel)el.dataset.on='1';};
   if(/^\d{4}-\d{2}-\d{2}$/.test(r.date)&&r.date<=today()) $('#f_date').value=r.date;
@@ -1807,7 +1854,7 @@ const ACT={
     if(!ok)return;try{localStorage.setItem(AI_KEY,key);}catch(e){return toast('Could not save on this device');}toast('AI assistant connected');render();},
   aiRemoveKey:async()=>{if(!await askYes('Remove your key?','AI features turn off on this phone. To cancel the key itself, delete it at console.anthropic.com.','Remove','dng'))return;
     try{localStorage.removeItem(AI_KEY);}catch(e){}toast('Key removed');render();},
-  aiQuick:t=>aiQuickLog(t), aiReflect:t=>aiReflect(t),
+  aiQuick:t=>aiQuickLog(t), aiReflect:t=>aiReflect(t), aiMic:()=>aiMic(),
   openTidy:()=>{if(tidy&&!tidy.running)tidy=null;go('aiTidy');},
   aiTidyGo:()=>aiTidyRun(), aiTidySave:()=>aiTidySave(), aiTidyCancel:()=>{tidy=null;back();},
   openSummary:t=>{if(t.dataset.rot)aiSum.scope=param;go('aiSummary');},
