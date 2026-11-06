@@ -234,6 +234,9 @@ header.top h1{font-weight:700;font-size:26px;letter-spacing:-.03em}
 .fab{box-shadow:0 12px 26px rgba(20,10,40,.3)}
 .row>*{min-width:0}
 .chip input[type=checkbox]:checked+span::before{content:"✓ "}
+.aiout{white-space:pre-wrap;font-size:14px;line-height:1.55;margin:0}
+.aiqs{margin:8px 0 0;padding-left:18px;font-size:13.5px;color:var(--ink2)}
+.aiqs li{margin:4px 0}
 .steprow{margin:12px 0}
 .steprow .t{display:flex;justify-content:space-between;gap:10px;font-size:13.5px}
 .steprow .t b{font-variant-numeric:tabular-nums}
@@ -576,7 +579,7 @@ function matchList(key,v){
 let view='dashboard', param=null, stack=[], formSnap=null, ignorePop=false;
 const ROOTS=['dashboard','cases','settings'];
 const TITLES={dashboard:'Logbook',cases:'Cases',form:'Log a case',settings:'Settings',list:'Edit list',ops:'Operations',opEdit:'Operation',fields:'Form fields',import:'Review import',
-  rotations:'Rotations',rotation:'Rotation',rotEdit:'Rotation',opStats:'Progress',backups:'Backups'};
+  rotations:'Rotations',rotation:'Rotation',rotEdit:'Rotation',opStats:'Progress',backups:'Backups',aiTidy:'Tidy older cases',aiSummary:'AI summary'};
 function go(v,p=null){ stack.push([view,param]); view=v; param=p; render(); window.scrollTo(0,0); }
 function goRoot(v){ stack=[]; view=v; param=null; render(); window.scrollTo(0,0); }
 function back(){ const [v,p]=stack.pop()||['dashboard',null]; view=v; param=p; render(); }
@@ -590,7 +593,7 @@ function render(){
   const tab=root?view:(stack.find(([v])=>ROOTS.includes(v))||['settings'])[0];
   $$('nav.tabs [data-v]').forEach(x=>x.classList.toggle('on',x.dataset.v===tab));
   ({dashboard:vDashboard,cases:vCases,form:vForm,settings:vSettings,list:vList,ops:vOps,opEdit:vOpEdit,fields:vFields,import:vImport,
-    rotations:vRotations,rotation:vRotation,rotEdit:vRotEdit,opStats:vOpStats,backups:vBackups})[view]();
+    rotations:vRotations,rotation:vRotation,rotEdit:vRotEdit,opStats:vOpStats,backups:vBackups,aiTidy:vAiTidy,aiSummary:vAiSummary})[view]();
   syncHistory();
 }
 // Android back gesture: keep one history entry while inside a sub-screen
@@ -812,6 +815,10 @@ function vForm(){
     return `<div class="field"><label>${esc(f.label)}</label><input class="inp" data-cf="${f.id}" type="${f.type==='number'?'number':'text'}" value="${esc(val??'')}"></div>`;
   }).join('');
   $('#main').innerHTML=`
+  ${!c&&aiKey()?`<div class="card"><p class="eyebrow">AI · quick log</p>
+    <textarea class="inp" id="ai_note" style="min-height:104px" placeholder="e.g. lap chole, 1st assist at RMH, did port entry and took the GB off the plate"></textarea>
+    <p class="small muted" style="margin:6px 0 10px">Type, or tap the mic on your keyboard. No names or URNs. Check the form before saving.</p>
+    <button type="button" class="btn sm pri" data-act="aiQuick">Fill in the form</button></div>`:''}
   <form id="caseForm" autocomplete="off">
     <div class="field"><label for="f_date">Date</label><input class="inp" type="date" id="f_date" value="${esc(v.date||'')}" required></div>
     <div class="field"><label for="f_op">Operation</label>
@@ -824,7 +831,8 @@ function vForm(){
     <div class="field" id="stepsBox" data-op="${esc(opByName(v.operation)?v.operation:'')}">${stepsBlock(v.operation,v.steps)}</div>
     <div class="field"><div class="lbl">Location</div><div class="chips" data-group="location">${S.locations.map(l=>`<label class="chip"><input type="radio" name="location" value="${esc(l.name)}"${l.name===v.location?' checked':''}><span>${esc(l.name)}</span></label>`).join('')}<button type="button" class="chip btn" data-act="addLoc">＋ New</button></div></div>
     ${shown('milestone')?`<label class="toggle card" style="padding:12px 16px"><span><span class="star">★</span> Milestone case<br><span class="small muted">First time doing something, skin-to-skin, etc.</span></span><input type="checkbox" id="f_mile"${v.milestone?' checked':''}></label>`:''}
-    <div class="field"><label for="f_cm">Comments / reflection</label><textarea class="inp" id="f_cm" placeholder="What I did, what went well, what to improve…">${esc(v.comments||'')}</textarea></div>
+    <div class="field"><label for="f_cm">Comments / reflection</label><textarea class="inp" id="f_cm" placeholder="What I did, what went well, what to improve…">${esc(v.comments||'')}</textarea>
+      ${aiKey()?`<button type="button" class="btn sm" data-act="aiReflect" style="margin-top:8px">Help me reflect</button><div id="aiQs"></div>`:''}</div>
     <details class="sec"${hasMore?' open':''}><summary>Case details</summary>
       ${shown('urgency')?`<div class="field"><div class="lbl">Urgency</div>${chips('urgency',S.urgencies,v.urgency)}</div>`:''}
       ${shown('approach')?`<div class="field"><div class="lbl">Approach</div>${chips('approach',S.approaches,v.approach)}</div>`:''}
@@ -953,9 +961,17 @@ function vSettings(){
     <div class="field" style="margin:14px 0 0"><label>When an imported record just says “Primary”, treat it as</label>
       <select class="inp" data-chg="primAssume">${S.roles.map(r=>`<option${r.name===S.primaryAssumption?' selected':''}>${esc(r.name)}</option>`).join('')}</select></div>
   </div>
-  <div class="card"><p class="eyebrow">AI suggestion · coming soon</p><h2>AI assistant</h2>
-    <p class="small" style="margin:0">Will suggest operation names and tags for free-text entries, pick out milestones from your comments, and write a progress summary (e.g. for your SET application). Only de-identified case text is ever sent.</p>
-    <div class="prog"><i style="width:35%;background:var(--muted)"></i></div>
+  <div class="card"><p class="eyebrow">Claude</p><h2>AI assistant</h2>
+    ${aiKey()?`<p class="small" style="margin:0 0 4px">Connected. Quick log and reflection prompts are on the logging form.</p>
+      <button class="link" data-act="openTidy"><span>Tidy older cases</span><span class="c">${tidyCases().length} to check ›</span></button>
+      <button class="link" data-act="openSummary"><span>AI summaries</span><span class="c">›</span></button>
+      <div class="field" style="margin:14px 0 12px"><label for="ai_model">Model</label>
+        <select class="inp" id="ai_model" data-chg="aiModel">${AI_MODELS.map(([v,l])=>`<option value="${v}"${v===aiModel()?' selected':''}>${l}</option>`).join('')}</select></div>
+      <p class="small muted" style="margin:0 0 10px">Sent only when you tap an AI button: operation, role, hospital, steps and your typed text. Age, sex and consultant are never sent, and long numbers that could be URNs are removed. Keep names out of your comments.</p>
+      <button class="btn dng sm" data-act="aiRemoveKey">Remove key from this phone</button>`
+    :`<p class="small" style="margin:0 0 10px">Add your Anthropic API key to turn on quick log, reflection prompts, tidying of older cases and summaries. Create one at console.anthropic.com. It stays on this phone and is never included in backups.</p>
+      <input class="inp" id="ai_key" type="password" autocomplete="off" placeholder="Paste your API key" aria-label="Anthropic API key">
+      <button class="btn pri block" style="margin-top:10px" data-act="aiSaveKey">Connect</button>`}
   </div>
   <div class="card"><p class="eyebrow">Coming soon</p><h2>Sync with Google</h2>
     <p class="small" style="margin:0">Will keep your phone and computer in step and back up to Google Drive automatically. Until then your cases are saved <b>only on this device</b> – the app reminds you to back up.</p>
@@ -1148,7 +1164,7 @@ function vRotation(){
   ${miles.length?`<div class="card"><p class="eyebrow">Progress</p><h2><span class="star">★</span> Milestones</h2>${miles.map(caseCard).join('')}</div>`:''}`
   :`<div class="empty">No cases logged in these dates${r.locations.length?' at '+esc(r.locations.join(' / ')):''} yet.</div>`}
   <div class="acts noprint">
-    ${cs.length?`<button class="btn sm" data-act="rotCases">View cases</button><button class="btn sm" data-act="rotExcel">Export Excel</button><button class="btn sm" data-act="print">Save as PDF</button>`:''}
+    ${cs.length?`<button class="btn sm" data-act="rotCases">View cases</button><button class="btn sm" data-act="rotExcel">Export Excel</button><button class="btn sm" data-act="print">Save as PDF</button>${aiKey()?'<button class="btn sm" data-act="openSummary" data-rot="1">AI summary</button>':''}`:''}
     <button class="btn sm" data-act="editRot">Edit dates</button>
   </div>`;
 }
@@ -1203,6 +1219,174 @@ async function vBackups(){
 async function exportXlsx(list,name){
   try{await loadXLSX();const wb=XLSX.utils.book_new();const ws=XLSX.utils.json_to_sheet(exportRows(list));ws['!cols']=[{wch:11},{wch:34},{wch:22},{wch:24},{wch:18},{wch:12}];
     XLSX.utils.book_append_sheet(wb,ws,'Cases');XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(summaryRows(list)),'Summary by operation');XLSX.writeFile(wb,name);}catch(e){notice('Export failed',e.message);}
+}
+
+/* ---------- AI assistant ---------- */
+// The key lives outside the logbook data so it is never in a backup, export or snapshot.
+const AI_KEY='logbook-ai-key';
+const AI_SDK='https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.5.0/+esm';
+const AI_MODELS=[['claude-opus-5-5','Opus 5.5 (standard)'],['claude-haiku-5-5','Haiku 5.5 (cheapest)']];
+const aiKey=()=>{try{return localStorage.getItem(AI_KEY)||'';}catch(e){return '';}};
+const aiModel=()=>S.aiModel||AI_MODELS[0][0];
+// removes long numbers (possible URNs) and, unless keepDates, full dates (possible DOBs)
+const deid=(s,keepDates)=>{let t=String(s??'').replace(/\b\d{6,}\b/g,'[number removed]');return keepDates?t:t.replace(/\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\b/g,'[date removed]');};
+let aiSdk=null;
+async function aiClient(key){
+  if(!aiSdk) aiSdk=await import(AI_SDK).catch(()=>{throw new Error('Could not load the AI tool – are you online?');});
+  return new aiSdk.default({apiKey:key,dangerouslyAllowBrowser:true}); // the key is the user's own and stays on their device
+}
+function aiErrorText(e){
+  const A=aiSdk&&aiSdk.default;
+  if(!A) return e.message;
+  if(e instanceof A.AuthenticationError) return 'Your API key wasn’t accepted. Check it in Settings.';
+  if(e instanceof A.PermissionDeniedError) return 'This key isn’t allowed to do that. Check it at console.anthropic.com.';
+  if(e instanceof A.RateLimitError) return 'Too many requests, or your spending limit was reached. Try again shortly.';
+  if(e instanceof A.BadRequestError) return 'Claude couldn’t take this request. Check your credit balance at console.anthropic.com.';
+  if(e instanceof A.APIConnectionError) return 'Couldn’t reach Claude – are you online?';
+  if(e instanceof A.APIError) return 'Claude is having trouble right now. Try again shortly.';
+  return e.message;
+}
+async function aiRequest({system,user,schema,effort='low',maxTokens=4000,onText}){
+  const client=await aiClient(aiKey()), model=aiModel();
+  const params={model,max_tokens:maxTokens,system,messages:[{role:'user',content:user}],output_config:{effort,...(schema?{format:{type:'json_schema',schema}}:{})}};
+  if(model==='claude-opus-5-5'){params.betas=['server-side-fallback-2026-07-01'];params.fallbacks='default';}
+  const stream=client.beta.messages.stream(params);
+  if(onText) stream.on('text',onText);
+  const msg=await stream.finalMessage();
+  if(msg.stop_reason==='refusal') throw new Error('Claude declined this request. Try rewording it.');
+  if(msg.stop_reason==='max_tokens') throw new Error('The answer was too long. Try fewer cases.');
+  const last=msg.content.map(b=>b.type).lastIndexOf('fallback'); // if a fallback model took over, only its answer counts
+  const text=msg.content.slice(last+1).filter(b=>b.type==='text').map(b=>b.text).join('');
+  return schema?JSON.parse(text):text;
+}
+// runs an AI action with its button showing progress and any failure shown in a dialog
+async function aiBusy(btn,label,fn){
+  const old=btn.textContent; btn.disabled=true; btn.textContent=label;
+  try{ return await fn(); }
+  catch(e){ notice('AI assistant',aiErrorText(e)); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+}
+const opLines=()=>S.operations.map(o=>o.name+(o.steps.length?` (steps: ${o.steps.join('; ')})`:'')).join('\n');
+const AI_ROLE='You help an Australian general surgery registrar keep a de-identified surgical logbook. Use Australian spelling. Never include or ask for patient identifiers such as names, URNs or dates of birth; leave out any that appear.';
+
+const QUICK_SCHEMA={type:'object',additionalProperties:false,required:['date','operation','detail','role','location','urgency','approach','converted','steps','milestone','comments'],properties:{
+  date:{type:'string'},operation:{type:'string'},detail:{type:'string'},role:{type:'string'},location:{type:'string'},urgency:{type:'string'},approach:{type:'string'},
+  converted:{type:'boolean'},steps:{type:'array',items:{type:'string'}},milestone:{type:'boolean'},comments:{type:'string'}}};
+async function aiQuickLog(btn){
+  const note=$('#ai_note').value.trim(); if(!note) return toast('Type a few words about the case first');
+  const r=await aiBusy(btn,'Working…',()=>aiRequest({schema:QUICK_SCHEMA,
+    system:`${AI_ROLE}\nTurn the registrar's note into one logbook entry. Choose the closest name from the lists given, spelled exactly as listed. If the operation isn't listed, give a short standard name. Use an empty string for anything the note doesn't state, and never guess the role. Ask no questions. date is YYYY-MM-DD and only if the note gives one (work out words like "yesterday"). detail is side or extras. steps lists only steps the note says the registrar personally did, taken from that operation's steps. milestone is true only if the note describes a first or a personal best. comments keeps the registrar's reflections in their own words, without repeating the other fields.`,
+    user:`Today is ${today()}.\nOperator roles: ${S.roles.map(x=>x.name).join(', ')}. Endoscopy operations use: ${SCOPE_ROLES.join(', ')}.\nHospitals: ${S.locations.map(l=>l.name).join(', ')}.\nUrgency: ${S.urgencies.join(', ')}.\nApproaches: ${S.approaches.join(', ')}.\nOperations:\n${opLines()}\n\n<note>\n${deid(note,true)}\n</note>`}));
+  if(!r) return;
+  applyQuickLog(r); $('#ai_note').value='';
+  toast('Form filled in – check it, then save');
+}
+function applyQuickLog(r){
+  const pick=(name,v)=>{const all=$$(`input[name="${name}"]`),el=all.find(x=>x.value.toLowerCase()===String(v||'').toLowerCase());if(!el)return;all.forEach(x=>{if(x.dataset.on)x.dataset.on='';});el.checked=true;if(el.dataset.desel)el.dataset.on='1';};
+  if(/^\d{4}-\d{2}-\d{2}$/.test(r.date)&&r.date<=today()) $('#f_date').value=r.date;
+  if(r.operation){ const known=S.operations.find(o=>o.name.toLowerCase()===r.operation.toLowerCase()); $('#f_op').value=known?known.name:r.operation; checkNewOp(); updateRoles(); }
+  pick('role',r.role); pick('location',r.location); pick('urgency',r.urgency); pick('approach',r.approach);
+  const stepEls=$$('input[name="step"]'); (r.steps||[]).forEach(s=>{const el=stepEls.find(x=>x.value.toLowerCase()===s.toLowerCase());if(el)el.checked=true;});
+  if(r.detail&&$('#f_detail')) $('#f_detail').value=r.detail;
+  if(r.milestone&&$('#f_mile')) $('#f_mile').checked=true;
+  if(r.converted&&$('#f_conv')) $('#f_conv').checked=true;
+  if(r.comments){const cm=$('#f_cm');cm.value=[cm.value.trim(),r.comments].filter(Boolean).join('\n');}
+  if(r.urgency||r.approach||r.converted){const d=$('#caseForm details.sec');if(d)d.open=true;}
+}
+async function aiReflect(btn){
+  const g=n=>(document.querySelector(`input[name="${n}"]:checked`)||{}).value||'';
+  const op=$('#f_op').value.trim(); if(!op) return toast('Enter the operation first');
+  const r=await aiBusy(btn,'Thinking…',()=>aiRequest({schema:{type:'object',additionalProperties:false,required:['questions'],properties:{questions:{type:'array',items:{type:'string'}}}},
+    system:`${AI_ROLE}\nWrite one or two short reflection questions for this case, each under 20 words. Make them specific to the operation, the registrar's role and anything they wrote, focusing on technique, decision-making or what to do differently next time. Ask only; give no advice or judgement.`,
+    user:`Operation: ${deid(op)}\nRole: ${g('role')||'not given'}\nSteps performed: ${$$('input[name="step"]:checked').map(e=>e.value).join('; ')||'none ticked'}\nComments so far: ${deid($('#f_cm').value)||'none'}`}));
+  if(!r) return;
+  $('#aiQs').innerHTML=`<ul class="aiqs">${r.questions.slice(0,2).map(q=>`<li>${esc(q)}</li>`).join('')}</ul><p class="small muted" style="margin:6px 0 0">Add your answers to the comments if you’d like them kept.</p>`;
+}
+
+/* Tidy older cases: suggest steps and milestones from comments, for the user to approve */
+const TIDY_BATCH=25;
+let tidy=null;
+const tidyCases=()=>db.cases.filter(c=>c.comments&&!c.tidied&&!(c.steps&&c.steps.length));
+function vAiTidy(){
+  const n=tidyCases().length, T=tidy;
+  if(!T){
+    $('#main').innerHTML=`<div class="card"><p class="eyebrow">From your comments</p><h2>${plural(n,'case')} to check</h2>
+      <p class="small" style="margin:0 0 12px">Claude reads each comment and suggests which steps you did and whether it was a milestone. Nothing changes until you approve it.</p>
+      ${n?`<button class="btn pri block" data-act="aiTidyGo">Check ${plural(n,'case')}</button>`:'<p class="small muted" style="margin:0">Nothing to check. Cases with comments and no steps will appear here.</p>'}</div>`;
+    return;
+  }
+  if(T.running){ $('#main').innerHTML=`<div class="card"><h2>Checking your cases…</h2><p class="small" style="margin:0">${T.done} of ${T.total} done. Keep this screen open.</p><div class="prog"><i style="width:${T.done/T.total*100}%"></i></div></div>`; return; }
+  $('#main').innerHTML=`${T.error?`<div class="banner"><span>Stopped after ${T.done} of ${T.total}: ${esc(T.error)}</span></div>`:''}
+    <div class="note">${plural(T.items.length,'suggestion')}${T.items.length?'. Untick anything that’s wrong.':'. Claude found nothing to add.'}</div>
+    ${T.items.map((it,i)=>{const c=db.cases.find(x=>x.id===it.id);return c?`<div class="card"><div style="font-weight:600">${esc(c.operation)}</div>
+      <div class="small muted">${fmtDate(c.date)} · ${esc(c.role||'No role')}</div><p class="small" style="margin:6px 0 10px">${esc(c.comments)}</p>
+      <div class="chips">${it.steps.map(s=>`<label class="chip"><input type="checkbox" data-tidy="${i}" value="${esc(s)}" checked><span>${esc(s)}</span></label>`).join('')}
+      ${it.milestone?`<label class="chip"><input type="checkbox" data-tidy="${i}" data-mile="1" checked><span>★ Milestone</span></label>`:''}</div></div>`:'';}).join('')}
+    <div class="savebar"><button class="btn" data-act="aiTidyCancel" style="flex:0 0 auto">Cancel</button><button class="btn pri" data-act="aiTidySave">${T.items.length?'Save ticked':'Done'}</button></div>`;
+}
+async function aiTidyRun(){
+  const list=tidyCases(); tidy={running:true,done:0,total:list.length,items:[],seen:[]}; render();
+  const T=tidy;
+  const schema={type:'object',additionalProperties:false,required:['results'],properties:{results:{type:'array',items:{type:'object',additionalProperties:false,required:['case','steps','milestone'],properties:{case:{type:'integer'},steps:{type:'array',items:{type:'string'}},milestone:{type:'boolean'}}}}}};
+  try{
+    for(let i=0;i<list.length;i+=TIDY_BATCH){
+      const batch=list.slice(i,i+TIDY_BATCH);
+      const r=await aiRequest({schema,maxTokens:8000,
+        system:`${AI_ROLE}\nFor each numbered case, read the comment and return a result. steps lists only steps from that case's list that the comment clearly shows the registrar personally did; "skin to skin" or "did everything" means all of them. If unclear, leave steps empty rather than guess. milestone is true only if the comment describes a first or a clear personal best.`,
+        user:batch.map((c,k)=>`Case ${k}\nOperation: ${c.operation}\nRole: ${c.role||'not recorded'}\nSteps to choose from: ${(opByName(c.operation)||{steps:[]}).steps.join('; ')||'none'}\nComment: ${deid(c.comments)}`).join('\n\n')});
+      (r.results||[]).forEach(x=>{const c=batch[x.case];if(!c)return;
+        const allowed=(opByName(c.operation)||{steps:[]}).steps, steps=x.steps.filter(s=>allowed.includes(s)), milestone=x.milestone&&!c.milestone;
+        if(steps.length||milestone) T.items.push({id:c.id,steps,milestone});});
+      T.seen.push(...batch.map(c=>c.id)); T.done=Math.min(list.length,i+TIDY_BATCH);
+      if(view==='aiTidy') render();
+    }
+  }catch(e){ T.error=aiErrorText(e); }
+  T.running=false; if(view==='aiTidy') render();
+}
+function aiTidySave(){
+  const T=tidy; snapshot('Before AI tidy');
+  T.items.forEach((it,i)=>{const c=db.cases.find(x=>x.id===it.id);if(!c)return;
+    const on=$$(`input[data-tidy="${i}"]:checked`);
+    const steps=on.filter(e=>!e.dataset.mile).map(e=>e.value);
+    if(steps.length) c.steps=steps;
+    if(on.some(e=>e.dataset.mile)) c.milestone=true;
+    c.updated=Date.now();});
+  T.seen.forEach(id=>{const c=db.cases.find(x=>x.id===id);if(c)c.tidied=true;}); // don't send these again
+  tidy=null; save(); toast('Saved'); back();
+}
+
+/* Summaries: the app counts the numbers; Claude only writes them up */
+const AI_SUMS={term:['Rotation summary','Write a short summary of this period for a supervisor: volume, role progression, case mix, milestones and areas to develop. Under 250 words.'],
+  set:['SET operative experience','Draft the operative experience section for a RACS SET application: volume, breadth, level of responsibility and progression. Formal first person, under 300 words. Don’t state any selection criteria or scores.'],
+  focus:['What to focus on next','List three to five practical areas to focus on next, each tied to a pattern in the data, such as operations with few primary cases or steps not yet performed.']};
+let aiSum={scope:'',type:'term',text:'',running:false};
+function aiSumData(){
+  const r=S.rotations.find(x=>x.id===aiSum.scope), cs=(r?rotCases(r):db.cases).slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+  const ops=cs.filter(c=>!isScopeRole(c.role)), prim=ops.filter(c=>isPrimary(c.role)).length, scopes=cs.length-ops.length;
+  const roles=S.roles.map(x=>`${x.name}: ${ops.filter(c=>c.role===x.name).length}`).join(', ');
+  const lines=cs.map(c=>[(c.date||'').slice(0,7),c.operation,c.role,c.location,c.urgency,c.approach,c.milestone?'milestone':'',c.steps&&c.steps.length?'steps: '+c.steps.join('; '):'',deid(c.comments)].filter(Boolean).join(' | '));
+  return {n:cs.length,text:`Period: ${r?`${r.name}, ${rotLabel(r)}`:'whole logbook'}\nTotal cases: ${cs.length}\nOperations (excluding endoscopy): ${ops.length}\nPrimary operator: ${prim} of ${ops.length}${ops.length?` (${Math.round(prim/ops.length*100)}%)`:''}\nBy role: ${roles}\nEndoscopies, not counted as primary: ${scopes}\n\nCases (month | operation | role | hospital | other):\n${lines.join('\n')}`};
+}
+function vAiSummary(){
+  const opt=(v,l,s)=>`<option value="${esc(v)}"${v===s?' selected':''}>${esc(l)}</option>`;
+  $('#main').innerHTML=`<div class="card">
+    <div class="field"><label for="ai_scope">Cases</label><select class="inp" id="ai_scope" data-chg="aiScope">${opt('','Whole logbook',aiSum.scope)}${[...S.rotations].sort((a,b)=>b.start.localeCompare(a.start)).map(r=>opt(r.id,r.name,aiSum.scope)).join('')}</select></div>
+    <div class="field"><label for="ai_type">Write</label><select class="inp" id="ai_type" data-chg="aiType">${Object.entries(AI_SUMS).map(([k,v])=>opt(k,v[0],aiSum.type)).join('')}</select></div>
+    <button class="btn pri block" data-act="aiSumGo"${aiSum.running?' disabled':''}>${aiSum.running?'Writing…':'Write it'}</button></div>
+  <div class="card" id="aiSumBox"${aiSum.text?'':' hidden'}><p class="eyebrow">Draft – check before using</p><p class="aiout" id="aiSumOut">${esc(aiSum.text)}</p>
+    <button class="btn sm" data-act="aiSumCopy" style="margin-top:12px">Copy</button></div>`;
+}
+async function aiSumRun(){
+  const d=aiSumData(); if(!d.n) return toast('No cases to summarise');
+  aiSum.text=''; aiSum.running=true; render();
+  const show=()=>{const b=$('#aiSumBox'),o=$('#aiSumOut');if(b&&o){b.hidden=!aiSum.text;o.textContent=aiSum.text;}};
+  try{
+    const final=await aiRequest({effort:'medium',maxTokens:8000,
+      system:`${AI_ROLE}\n${AI_SUMS[aiSum.type][1]}\nUse the given totals exactly and don't work out your own. State only what the data shows, and invent nothing. Write plain text with no markdown.`,
+      user:d.text,onText:t=>{aiSum.text+=t;show();}});
+    aiSum.text=final;
+  }catch(e){ notice('AI assistant',aiErrorText(e)); }
+  aiSum.running=false; if(view==='aiSummary') render();
 }
 
 /* ---------- Import / export ---------- */
@@ -1388,6 +1572,17 @@ const ACT={
     const cur=[...new Set([...$$('input[name="step"]:checked').map(e=>e.value),s])]; $('#stepsBox').innerHTML=stepsBlock(o.name,cur);},
   allSteps:()=>{const bs=$$('input[name="step"]'),on=!bs.every(b=>b.checked);bs.forEach(b=>b.checked=on);},
   opStats:t=>go('opStats',t.dataset.n),
+  aiSaveKey:async t=>{const key=$('#ai_key').value.trim();if(!key)return toast('Paste your API key first');
+    const ok=await aiBusy(t,'Checking…',async()=>{await (await aiClient(key)).models.list({limit:1});return true;});
+    if(!ok)return;try{localStorage.setItem(AI_KEY,key);}catch(e){return toast('Could not save on this device');}toast('AI assistant connected');render();},
+  aiRemoveKey:async()=>{if(!await askYes('Remove your key?','AI features turn off on this phone. To cancel the key itself, delete it at console.anthropic.com.','Remove','dng'))return;
+    try{localStorage.removeItem(AI_KEY);}catch(e){}toast('Key removed');render();},
+  aiQuick:t=>aiQuickLog(t), aiReflect:t=>aiReflect(t),
+  openTidy:()=>{if(tidy&&!tidy.running)tidy=null;go('aiTidy');},
+  aiTidyGo:()=>aiTidyRun(), aiTidySave:()=>aiTidySave(), aiTidyCancel:()=>{tidy=null;back();},
+  openSummary:t=>{if(t.dataset.rot)aiSum.scope=param;go('aiSummary');},
+  aiSumGo:()=>aiSumRun(),
+  aiSumCopy:async()=>{try{await navigator.clipboard.writeText(aiSum.text);toast('Copied');}catch(e){toast('Couldn’t copy – press and hold the text instead');}},
   openRots:()=>go('rotations'), openRot:t=>go('rotation',t.dataset.id), newRot:()=>go('rotEdit',null), editRot:()=>go('rotEdit',param),
   addSugg:t=>{const s=rotSugg[+t.dataset.i];rotDraft={name:s.name,start:s.start,end:s.end,locations:s.locations};go('rotEdit',null);},
   addAllSugg:()=>{rotSugg.forEach(s=>S.rotations.push({id:uid(),name:s.name,start:s.start,end:s.end,locations:s.locations}));save();toast(`Added ${plural(rotSugg.length,'rotation')}`);render();},
@@ -1411,6 +1606,8 @@ const CHG={
   primAssume:t=>{S.primaryAssumption=t.value;save();},
   rolePrim:t=>{S.roles[+t.dataset.i].primary=t.checked;save();},
   backupEvery:t=>{S.backup.every=+t.value;save(false);},
+  aiModel:t=>{S.aiModel=t.value;save(false);},
+  aiScope:t=>{aiSum.scope=t.value;}, aiType:t=>{aiSum.type=t.value;},
   showField:t=>{const k=t.dataset.k;S.hidden=S.hidden.filter(x=>x!==k);if(!t.checked)S.hidden.push(k);save();},
   impPick:t=>{pending.rows[+t.dataset.i].choice=t.value;}
 };
