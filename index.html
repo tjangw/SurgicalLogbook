@@ -247,6 +247,12 @@ header.top h1{font-weight:700;font-size:26px;letter-spacing:-.03em}
 .acts .btn{flex:1 1 auto}
 .banner{display:flex;align-items:center;gap:10px;background:var(--warn-bg);color:var(--warn-ink);border-radius:16px;padding:10px 12px 10px 14px;margin:0 0 12px;font-size:13px}
 .banner span{flex:1}
+/* computer screens: wider page, navigation centred under it */
+@media (min-width:900px){
+  header.top,main{max-width:860px}
+  nav.tabs{left:50%;right:auto;transform:translateX(-50%);width:420px}
+  .fab{right:auto;left:calc(50% + 222px)}
+}
 @media print{
   html,body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   header.top .sq,nav.tabs,.fab,#toast,.noprint{display:none!important}
@@ -396,7 +402,7 @@ function load(){
   return {cases:[],settings:defaultSettings()};
 }
 // touch=false for housekeeping saves that shouldn't count as a change needing backup
-function save(touch=true){ if(touch) db.modified=Date.now(); try{localStorage.setItem(KEY,JSON.stringify(db));}catch(e){toast('Could not save on this device');} }
+function save(touch=true){ if(touch) db.modified=Date.now(); try{localStorage.setItem(KEY,JSON.stringify(db));}catch(e){toast('Could not save on this device');} syncChanged(); }
 function migrate(){
   if(!(S.v>=2)){
     ['Colonoscopy','Gastroscopy','Flexible sigmoidoscopy'].forEach(n=>{const o=opByName(n);if(o&&o.scope===undefined)o.scope=true;});
@@ -409,6 +415,7 @@ function migrate(){
   S.rotations=S.rotations||[]; S.backup=S.backup||{every:7,last:0};
   S.operations.forEach(o=>{o.steps=o.steps||[];});
   db.cases.forEach(c=>{
+    if(!c.id) c.id=uid();
     if(c.importNote&&/assumed Primary supervised/.test(c.importNote)) c.importNote=c.importNote.split('; ').filter(x=>!/assumed Primary supervised/.test(x)).join('; ');
     if(isScopeOp(c.operation)&&c.role&&!SCOPE_ROLES.includes(c.role)){const r=scopeRole(c.role,c.comments);c.role=r.role;if(r.note)c.importNote=[c.importNote,r.note].filter(Boolean).join('; ');}
   });
@@ -448,7 +455,8 @@ async function backupNow(){
   S.backup.last=Date.now(); save(false); toast('Backup saved ✓'); render();
 }
 const daysSince=t=>Math.floor((Date.now()-t)/864e5);
-const backupDue=()=>db.cases.length&&S.backup.every>0&&(db.modified||1)>(S.backup.last||0)&&daysSince(S.backup.last||0)>=S.backup.every;
+// With sync on, the account already holds a copy, so the reminder drops to at most monthly
+const backupDue=()=>db.cases.length&&S.backup.every>0&&(db.modified||1)>(S.backup.last||0)&&daysSince(S.backup.last||0)>=(Y?Math.max(S.backup.every,30):S.backup.every);
 
 /* ---------- Helpers ---------- */
 const $=(s,r=document)=>r.querySelector(s);
@@ -914,7 +922,7 @@ async function saveCase(existing,then){
   c.updated=Date.now();
   if(c.consultant&&!S.consultants.includes(c.consultant)) S.consultants.push(c.consultant);
   if(c.location) S.lastLocation=c.location;
-  if(!existing) db.cases.push(c);
+  if(!db.cases.includes(c)) db.cases.push(c); // also covers a case deleted on another device while this form was open
   save(); toast(existing?'Case updated':'Case saved ✓');
   formSnap=null;
   if(then) then(); else if(existing) back(); else goRoot('cases');
@@ -973,9 +981,7 @@ function vSettings(){
       <input class="inp" id="ai_key" type="password" autocomplete="off" placeholder="Paste your API key" aria-label="Anthropic API key">
       <button class="btn pri block" style="margin-top:10px" data-act="aiSaveKey">Connect</button>`}
   </div>
-  <div class="card"><p class="eyebrow">Coming soon</p><h2>Sync with Google</h2>
-    <p class="small" style="margin:0">Will keep your phone and computer in step and back up to Google Drive automatically. Until then your cases are saved <b>only on this device</b> – the app reminds you to back up.</p>
-  </div>
+  <div class="card" id="syncCard">${syncCardHtml()}</div>
   <div class="card"><p class="eyebrow">Careful</p><h2>Danger zone</h2>
     <div class="row"><button class="btn dng sm" data-act="wipe">Delete all cases</button><button class="btn dng sm" data-act="resetLists">Reset lists</button></div>
   </div>`;
@@ -1389,6 +1395,228 @@ async function aiSumRun(){
   aiSum.running=false; if(view==='aiSummary') render();
 }
 
+/* ---------- Sync with Google ---------- */
+// This device's copy stays the working copy, so the app still works offline. Each case is one document in the
+// account (users/<uid>/items). After every save the logbook is compared with what the account last held, and only
+// the differences are sent. Deleted cases leave a marker so the deletion reaches other devices. Latest edit wins.
+// Sync bookkeeping lives outside db, so it is never part of a backup.
+// These values identify the Firebase project and aren't secret: the security rules protect the data.
+const FIREBASE_CONFIG={
+  apiKey:'AIzaSyCDgTBZEkoI8TXMox22Cest4MbsRbopKH0',
+  authDomain:'surgical-logbook-8e3e9.firebaseapp.com',
+  projectId:'surgical-logbook-8e3e9',
+  storageBucket:'surgical-logbook-8e3e9.firebasestorage.app',
+  messagingSenderId:'303604301475',
+  appId:'1:303604301475:web:4c585b277347d537718916'
+};
+const FB_SDK='https://www.gstatic.com/firebasejs/10.14.1/';
+const SYNC_KEY='logbook-sync', SYNC_BATCH=400;
+const SYNC_DEVICE_ONLY=['backup','aiModel','lastLocation']; // settings that belong to one device
+function syncRead(){try{const j=JSON.parse(localStorage.getItem(SYNC_KEY));if(j&&j.uid)return j;}catch(e){}return null;}
+let Y=syncRead();   // {uid,email,cursor,base:{key:hash},pending:{key:{t,h}}}; null = not linked to an account
+let fb=null, syncUser=null, syncStop=null, syncBusy=false, syncLinking=false, syncKnown=false, syncTimer=0, syncErr='';
+function syncWrite(){if(Y)try{localStorage.setItem(SYNC_KEY,JSON.stringify(Y));}catch(e){}}
+function syncHash(s){let a=0xdeadbeef,b=0x41c6ce57;for(let i=0;i<s.length;i++){const c=s.charCodeAt(i);a=Math.imul(a^c,2654435761);b=Math.imul(b^c,1597334677);}
+  a=Math.imul(a^(a>>>16),2246822507)^Math.imul(b^(b>>>13),3266489909);b=Math.imul(b^(b>>>16),2246822507)^Math.imul(a^(a>>>13),3266489909);
+  return (b>>>0).toString(36)+(a>>>0).toString(36);}
+function settingsJson(){const o={...S};SYNC_DEVICE_ONLY.forEach(k=>delete o[k]);return JSON.stringify(o);}
+function syncLive(){const m=new Map();db.cases.forEach(c=>m.set('c_'+c.id,JSON.stringify(c)));m.set('settings',settingsJson());return m;}
+function adoptSettings(o){const keep={};SYNC_DEVICE_ONLY.forEach(k=>{if(S[k]!==undefined)keep[k]=S[k];});db.settings=S={...defaultSettings(),...o,...keep};migrate();}
+function settingsCombined(o){const r={...o},id=x=>x&&typeof x==='object'?(x.id||x.name||JSON.stringify(x)):x;
+  Object.keys(S).forEach(k=>{if(!Array.isArray(S[k])||!Array.isArray(r[k]))return;const seen=new Set(r[k].map(id));r[k]=r[k].concat(S[k].filter(x=>!seen.has(id(x))));});return r;}
+function syncErrText(e){const c=e&&e.code||'';
+  if(/permission-denied/.test(c)) return 'Your Google account was refused by the database. Check the Firestore security rules are published.';
+  if(/unauthorized-domain/.test(c)) return 'This web address isn’t on the Authorized domains list in Firebase.';
+  if(/unavailable|network/.test(c)||!navigator.onLine) return 'Couldn’t reach Google. Check your connection and try again.';
+  return 'Sync failed'+(c?` (${c})`:'')+'. Your cases are safe on this device.';}
+
+// Record what has changed here since the account last held it
+function syncScan(){
+  if(!Y) return;
+  const now=Date.now(), live=syncLive();
+  live.forEach((json,k)=>{const h=syncHash(json),p=Y.pending[k];
+    if(Y.base[k]===h){if(p)delete Y.pending[k];}
+    else if(!p||p.h!==h) Y.pending[k]={t:now,h};});
+  Object.keys(Y.base).forEach(k=>{const p=Y.pending[k];if(!live.has(k)&&(!p||p.h!==null))Y.pending[k]={t:now,h:null};});
+  Object.keys(Y.pending).forEach(k=>{if(!live.has(k)&&!(k in Y.base))delete Y.pending[k];});
+  syncWrite();
+}
+function syncChanged(){if(!Y)return;clearTimeout(syncTimer);syncTimer=setTimeout(()=>{syncScan();syncFlush();},1200);}
+const syncItems=()=>fb.f.collection(fb.store,'users',syncUser.uid,'items');
+
+// Send what's waiting. An item leaves the waiting list only once Google confirms it, so a closed app just resends.
+async function syncFlush(){
+  if(!Y||!syncUser||syncBusy||syncLinking||!navigator.onLine){syncShow();return;}
+  syncScan();
+  const keys=Object.keys(Y.pending);
+  if(!keys.length){syncShow();return;}
+  syncBusy=true; syncShow();
+  const live=syncLive();
+  try{
+    for(let i=0;i<keys.length&&Y;i+=SYNC_BATCH){
+      const part=keys.slice(i,i+SYNC_BATCH), sent={}, b=fb.f.writeBatch(fb.store);
+      part.forEach(k=>{const p=sent[k]=Y.pending[k]; if(!p) return;
+        const when={u:p.t,s:fb.f.serverTimestamp()};
+        b.set(fb.f.doc(syncItems(),k),p.h===null?{...when,del:true}:{...when,d:live.get(k)});});
+      await b.commit();
+      if(!Y) break;
+      part.forEach(k=>{const p=sent[k]; if(!p||Y.pending[k]!==p) return;
+        delete Y.pending[k]; if(p.h===null) delete Y.base[k]; else Y.base[k]=p.h;});
+      syncWrite();
+    }
+    syncErr='';
+  }catch(e){syncErr=syncErrText(e);}
+  syncBusy=false; syncShow();
+  if(Y&&!syncErr&&Object.keys(Y.pending).length) syncChanged();
+}
+
+// Apply one document from the account. Returns true if this device's logbook changed.
+function syncApply(k,r){
+  const p=Y.pending[k];
+  if(p&&!(r.u>p.t)) return false;      // the newer edit is the one here, and it's on its way
+  if(p) delete Y.pending[k];
+  if(k==='settings'){
+    if(syncHash(r.d)===syncHash(settingsJson())){Y.base[k]=syncHash(r.d);return false;}
+    adoptSettings(JSON.parse(r.d)); Y.base[k]=syncHash(settingsJson()); return true;
+  }
+  const id=k.slice(2), i=db.cases.findIndex(c=>c.id===id);
+  if(r.del){ delete Y.base[k]; if(i<0) return false; db.cases.splice(i,1); return true; }
+  Y.base[k]=syncHash(r.d);
+  if(i<0){db.cases.push(JSON.parse(r.d));return true;}
+  const c=db.cases[i];
+  if(JSON.stringify(c)===r.d) return false;
+  // same object, so a form open on this case keeps pointing at it
+  Object.keys(c).forEach(x=>delete c[x]); Object.assign(c,JSON.parse(r.d)); return true;
+}
+function syncIncoming(snap){
+  if(!Y) return;
+  syncScan();   // catch any edit from the last moment before comparing
+  let changed=false;
+  snap.docChanges().forEach(x=>{
+    if(x.type==='removed'||x.doc.metadata.hasPendingWrites) return;
+    const r=x.doc.data();
+    if(syncApply(x.doc.id,r)) changed=true;
+    if(r.s&&r.s.toMillis()>Y.cursor) Y.cursor=r.s.toMillis();
+  });
+  syncWrite();
+  if(changed){ save(false); syncRefresh(); }
+  else syncShow();
+}
+function syncRefresh(){  // never redraw over a form, a dialog or something being typed
+  if(ROOTS.includes(view)&&$('#modal').hidden&&!/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement||{}).tagName||'')) render();
+  else syncShow();
+}
+function syncListen(){
+  if(syncStop) syncStop();
+  const q=fb.f.query(syncItems(),fb.f.where('s','>=',fb.f.Timestamp.fromMillis(Y.cursor||0)));
+  syncStop=fb.f.onSnapshot(q,syncIncoming,e=>{syncStop=null;syncErr=syncErrText(e);syncShow();});
+}
+
+// First sign-in on this device: bring the two logbooks together
+async function syncLink(){
+  syncLinking=true; syncShow();
+  try{
+    const snap=await fb.f.getDocs(syncItems());
+    const remote={}; let cursor=0, rCases=0;
+    snap.docs.forEach(d=>{const r=d.data();remote[d.id]=r;if(!r.del&&d.id!=='settings')rCases++;if(r.s&&r.s.toMillis()>cursor)cursor=r.s.toMillis();});
+    const unique=db.cases.filter(c=>{const r=remote['c_'+c.id];return !r||r.del||r.d!==JSON.stringify(c);}).length;
+    let k='merge';
+    if(rCases&&unique){
+      k=await ask('Combine your logbooks?',`${plural(unique,'case')} on this device ${unique===1?'isn’t':'aren’t'} in your Google account, which holds ${plural(rCases,'case')}. A snapshot of this device is saved first.`,
+        [['merge','Combine them','pri'],['account','Use my account’s copy only','dng'],['cancel','Not now','']]);
+      if(k==='cancel'){await fb.u.signOut(fb.auth);return;}
+    }
+    if(rCases&&db.cases.length) snapshot('Before linking to Google');
+    const onlyAccount=k==='account'||!db.cases.length;
+    const y={uid:syncUser.uid,email:syncUser.email||'',cursor,base:{},pending:{}};
+    if(k==='account') db.cases=[];
+    Object.entries(remote).forEach(([key,r])=>{
+      if(r.del||key==='settings') return;
+      y.base[key]=syncHash(r.d);
+      const id=key.slice(2), i=db.cases.findIndex(c=>c.id===id);
+      if(i<0) db.cases.push(JSON.parse(r.d));
+      else if((db.modified||0)<r.u) db.cases[i]=JSON.parse(r.d);
+    });
+    if(remote.settings){ adoptSettings(onlyAccount?JSON.parse(remote.settings.d):settingsCombined(JSON.parse(remote.settings.d))); y.base.settings=syncHash(remote.settings.d); }
+    Y=y; syncWrite(); save(false); syncScan();
+    toast('Signed in – sync is on'); syncRefresh();
+  }catch(e){
+    Y=null; localStorage.removeItem(SYNC_KEY);
+    try{await fb.u.signOut(fb.auth);}catch(_){}
+    notice('Couldn’t turn on sync',syncErrText(e));
+  }finally{ syncLinking=false; }
+}
+async function syncAuth(user){
+  syncKnown=true; syncUser=user;
+  if(syncStop){syncStop();syncStop=null;}
+  if(user){
+    if(Y&&Y.uid!==user.uid){Y=null;localStorage.removeItem(SYNC_KEY);}
+    if(!Y) await syncLink();
+    if(Y&&syncUser){syncErr='';syncListen();syncFlush();}
+  }
+  syncShow();
+}
+async function syncSdk(){
+  if(fb) return fb;
+  const [a,u,f]=await Promise.all(['app','auth','firestore'].map(n=>import(`${FB_SDK}firebase-${n}.js`)));
+  const app=a.initializeApp(FIREBASE_CONFIG);
+  fb={u,f,auth:u.getAuth(app),store:f.getFirestore(app)};
+  u.onAuthStateChanged(fb.auth,syncAuth);
+  return fb;
+}
+async function syncSignIn(){
+  try{
+    await syncSdk();
+    const popup=()=>fb.u.signInWithPopup(fb.auth,new fb.u.GoogleAuthProvider());
+    try{await popup();}
+    catch(e){
+      if(e.code!=='auth/popup-blocked') throw e;
+      if(await askYes('Continue to Google?','Sign in opens in a new window.','Continue')) await popup();  // a fresh tap lets the window open
+    }
+  }catch(e){
+    if(!/popup-closed|cancelled-popup/.test(e.code||'')) notice('Couldn’t sign in',syncErrText(e));
+  }
+}
+async function syncSignOut(){
+  const n=Y?Object.keys(Y.pending).length:0;
+  const k=await ask('Sign out?',`${n?`${plural(n,'change')} on this device haven’t reached your account yet. `:''}Use “Remove” on a shared computer.`,
+    [['keep','Sign out, keep this copy','pri'],['wipe','Sign out and remove from this device','dng'],['cancel','Cancel','']]);
+  if(k==='cancel') return;
+  clearTimeout(syncTimer);
+  if(syncStop){syncStop();syncStop=null;}
+  Y=null; localStorage.removeItem(SYNC_KEY);
+  try{await fb.u.signOut(fb.auth);}catch(e){}
+  if(k==='wipe'){
+    db={cases:[],settings:defaultSettings()}; S=db.settings; save(false);
+    localStorage.removeItem(AI_KEY);
+    try{(await idb()).transaction('snaps','readwrite').objectStore('snaps').clear();}catch(e){}
+    toast('Signed out and removed from this device'); goRoot('dashboard');
+  } else { toast('Signed out'); render(); }
+}
+function syncStatus(){
+  if(syncLinking) return 'Connecting to your account…';
+  if(syncErr) return syncErr;
+  const n=Y?Object.keys(Y.pending).length:0;
+  if(!navigator.onLine) return `Offline. ${n?plural(n,'change')+' will sync':'Changes will sync'} when you’re back online.`;
+  if(syncBusy) return 'Syncing…';
+  return n?`${plural(n,'change')} waiting to sync.`:'Up to date.';
+}
+function syncCardHtml(){
+  const head='<p class="eyebrow">Your account</p><h2>Sync with Google</h2>';
+  if(Y&&syncUser) return `${head}<p class="small" style="margin:0 0 4px">Signed in as <b>${esc(syncUser.email||Y.email)}</b></p>
+    <p class="small muted" style="margin:0 0 12px">${esc(syncStatus())}</p>
+    <div class="row"><button class="btn sm" data-act="syncNow">Sync now</button><button class="btn sm" data-act="syncOut">Sign out</button></div>`;
+  if(Y&&!syncKnown) return `${head}<p class="small" style="margin:0">Saved on this device. ${navigator.onLine?'Connecting…':'It will sync when you’re back online.'}</p>`;
+  if(syncLinking) return `${head}<p class="small" style="margin:0">${esc(syncStatus())}</p>`;
+  return `${head}<p class="small" style="margin:0 0 8px">${Y?'You’re signed out, so changes here aren’t syncing.':'Keep the same logbook on your phone and computer, with a copy held safely in your account. Without this, your cases are saved <b>only on this device</b>.'}</p>
+    <p class="small muted" style="margin:0 0 10px">Only your Google sign-in can open your cases. Keep them free of names, URNs and dates of birth.</p>
+    <button class="btn pri block" data-act="syncIn">Sign in with Google</button>`;
+}
+function syncShow(){const c=$('#syncCard');if(c)c.innerHTML=syncCardHtml();}
+window.addEventListener('online',()=>{syncErr='';syncFlush();});
+window.addEventListener('offline',syncShow);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)syncFlush();});
+
 /* ---------- Import / export ---------- */
 function loadXLSX(){
   if(window.XLSX) return Promise.resolve();
@@ -1572,6 +1800,8 @@ const ACT={
     const cur=[...new Set([...$$('input[name="step"]:checked').map(e=>e.value),s])]; $('#stepsBox').innerHTML=stepsBlock(o.name,cur);},
   allSteps:()=>{const bs=$$('input[name="step"]'),on=!bs.every(b=>b.checked);bs.forEach(b=>b.checked=on);},
   opStats:t=>go('opStats',t.dataset.n),
+  syncIn:()=>syncSignIn(), syncOut:()=>syncSignOut(),
+  syncNow:()=>{syncErr='';if(!syncStop)syncListen();syncFlush();toast('Syncing');},
   aiSaveKey:async t=>{const key=$('#ai_key').value.trim();if(!key)return toast('Paste your API key first');
     const ok=await aiBusy(t,'Checking…',async()=>{await (await aiClient(key)).models.list({limit:1});return true;});
     if(!ok)return;try{localStorage.setItem(AI_KEY,key);}catch(e){return toast('Could not save on this device');}toast('AI assistant connected');render();},
@@ -1634,6 +1864,7 @@ if(navigator.storage&&navigator.storage.persist) navigator.storage.persist().cat
 migrate();
 snapshot('Automatic');
 render();
+if(Y) syncSdk().catch(()=>{syncShow();});   // loaded only once signed in, so the app opens offline as before
 </script>
 </body>
 </html>
